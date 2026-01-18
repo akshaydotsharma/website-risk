@@ -7,10 +7,17 @@ import {
   hasHiddenContactContent,
 } from "./browser";
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Lazy-initialize OpenAI client to avoid build-time errors
+let openai: OpenAI | null = null;
+
+function getOpenAI(): OpenAI {
+  if (!openai) {
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+  return openai;
+}
 
 // Data Point #1: Contact Details Schema
 const contactDetailsSchema = z.object({
@@ -542,7 +549,7 @@ export async function extractDataPoint(
     }
 
     // Call OpenAI with the website content
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAI().chat.completions.create({
       model: "gpt-4o",
       messages: [
         {
@@ -653,7 +660,7 @@ export async function extractDataPointFromContent(
     }
 
     // Call OpenAI with the website content
-    const completion = await openai.chat.completions.create({
+    const completion = await getOpenAI().chat.completions.create({
       model: "gpt-4o",
       messages: [
         {
