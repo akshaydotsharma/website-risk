@@ -1,0 +1,147 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Domain represents a unique website domain (normalized/cleaned)
+// Multiple user inputs that resolve to the same domain share this record
+model Domain {
+  id            String   @id // Hash of normalized domain (e.g., SHA-256 of "envisso.com")
+  normalizedUrl String   @unique // The cleaned domain (e.g., "envisso.com")
+  isActive      Boolean  @default(false)
+  statusCode    Int?
+  lastCheckedAt DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  urlInputs      UrlInput[]
+  scans          WebsiteScan[]
+  dataPoints     DomainDataPoint[]
+
+  @@index([normalizedUrl])
+}
+
+// UrlInput logs every user input that maps to a domain
+// Tracks the original URL/format the user entered
+model UrlInput {
+  id          String   @id @default(cuid())
+  rawInput    String   // Original user input (e.g., "https://www.envisso.com/")
+  domainId    String   // Maps to Domain.id (hash)
+  source      String   @default("search") // "search" | "settings" | "api"
+  createdAt   DateTime @default(now())
+
+  domain      Domain   @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@index([domainId])
+  @@index([rawInput])
+  @@index([createdAt])
+}
+
+// WebsiteScan represents a single scan execution for a domain
+model WebsiteScan {
+  id         String   @id @default(cuid())
+  domainId   String
+  url        String   // Full URL used for scanning (with protocol)
+  isActive   Boolean  @default(false)
+  statusCode Int?
+  checkedAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  domain         Domain          @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  dataPoints     ScanDataPoint[]
+  crawlFetchLogs CrawlFetchLog[]
+
+  @@index([domainId])
+  @@index([url])
+  @@index([checkedAt])
+}
+
+// DomainDataPoint stores the latest extracted data for a domain
+// This is the "merged" view that combines all scan results
+model DomainDataPoint {
+  id                String   @id @default(cuid())
+  domainId          String
+  key               String   // e.g., "contact_details"
+  label             String   // e.g., "Contact details"
+  value             String   // JSON string of extracted data
+  sources           String   // JSON array of source URLs
+  rawOpenAIResponse String   // JSON string of full OpenAI response
+  extractedAt       DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  domain            Domain   @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([domainId, key])
+  @@index([domainId])
+  @@index([key])
+}
+
+model ScanDataPoint {
+  id                  String      @id @default(cuid())
+  scanId              String
+  key                 String      // e.g., "contact_details"
+  label               String      // e.g., "Contact details"
+  value               String      // JSON string of extracted data
+  sources             String      // JSON array of source URLs
+  rawOpenAIResponse   String      // JSON string of full OpenAI response
+  extractedAt         DateTime    @default(now())
+
+  scan                WebsiteScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([key])
+}
+
+model AuthorizedDomain {
+  id              String   @id @default(cuid())
+  domain          String   @unique
+  allowSubdomains Boolean  @default(true)
+  respectRobots   Boolean  @default(true)
+  maxPagesPerScan Int      @default(50)
+  crawlDelayMs    Int      @default(1000)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([domain])
+}
+
+model CrawlFetchLog {
+  id             String   @id @default(cuid())
+  scanId         String
+  url            String
+  method         String   @default("GET")
+  statusCode     Int?
+  contentType    String?
+  contentLength  Int?
+  fetchDurationMs Int?
+  errorMessage   String?
+  robotsAllowed  Boolean  @default(true)
+  source         String   // "homepage" | "robots" | "sitemap" | "crawl" | "contact_page"
+  createdAt      DateTime @default(now())
+
+  scan           WebsiteScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([url])
+  @@index([createdAt])
+}
+
+model UserPreference {
+  id        String   @id @default(cuid())
+  userId    String   @default("default") // For future multi-user support
+  key       String   // e.g., "scans_sort_field", "scans_sort_direction"
+  value     String   // The preference value
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, key])
+  @@index([userId])
+}
