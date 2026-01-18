@@ -41,7 +41,7 @@ export async function GET(request: Request) {
     });
 
     return NextResponse.json({
-      domains: domains.map((domain) => ({
+      domains: domains.map((domain: typeof domains[number]) => ({
         id: domain.id,
         normalizedUrl: domain.normalizedUrl,
         isActive: domain.isActive,
