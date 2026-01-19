@@ -232,22 +232,29 @@ export async function fetchWithBrowser(
 async function dismissOverlays(page: Page): Promise<void> {
   // Use JavaScript to find and click dismiss buttons, and hide overlays
   await page.evaluate(() => {
-    // Common button text patterns for cookie consent
-    const buttonTextPatterns = ['got it', 'accept', 'ok', 'i agree', 'agree', 'close', 'dismiss'];
+    // Common button text patterns for cookie consent - use word boundaries to avoid false matches
+    // e.g., "ok" should not match "book now"
+    const buttonTextPatterns = ['got it', 'accept all', 'accept cookies', 'i agree', 'agree', 'close', 'dismiss'];
+    const exactMatchPatterns = ['ok', 'accept']; // These must be exact matches only
 
     // Find all buttons and click ones with matching text
-    const buttons = document.querySelectorAll('button, [role="button"], a.btn, .btn');
+    // Only target actual buttons, not links that might navigate away
+    const buttons = document.querySelectorAll('button, [role="button"]');
     buttons.forEach((btn) => {
       if (!(btn instanceof HTMLElement)) return;
 
       const text = btn.textContent?.toLowerCase().trim() || '';
       const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
 
-      const isMatch = buttonTextPatterns.some(pattern =>
+      // Check for exact matches first
+      const isExactMatch = exactMatchPatterns.some(pattern => text === pattern);
+
+      // Check for partial matches (phrase must appear as whole words)
+      const isPartialMatch = buttonTextPatterns.some(pattern =>
         text === pattern || text.includes(pattern) || ariaLabel.includes(pattern)
       );
 
-      if (isMatch) {
+      if (isExactMatch || isPartialMatch) {
         const style = window.getComputedStyle(btn);
         if (style.display !== 'none' && style.visibility !== 'hidden') {
           btn.click();
