@@ -136,19 +136,95 @@ function cleanHTML(html: string): string {
 }
 
 /**
+ * Extract JSON-LD structured data from HTML
+ * Returns contact-relevant information from schema.org markup
+ */
+function extractJsonLdData(html: string): string {
+  const jsonLdBlocks: string[] = [];
+  const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+
+  while ((match = jsonLdRegex.exec(html)) !== null) {
+    try {
+      const jsonData = JSON.parse(match[1]);
+      // Extract contact-relevant fields from JSON-LD
+      const extractContactInfo = (obj: any): string[] => {
+        const info: string[] = [];
+        if (!obj || typeof obj !== 'object') return info;
+
+        // Handle @graph arrays
+        if (obj['@graph'] && Array.isArray(obj['@graph'])) {
+          for (const item of obj['@graph']) {
+            info.push(...extractContactInfo(item));
+          }
+          return info;
+        }
+
+        // Extract relevant fields
+        if (obj.telephone) info.push(`PHONE: ${obj.telephone}`);
+        if (obj.email) info.push(`EMAIL: ${obj.email}`);
+        if (obj.address) {
+          if (typeof obj.address === 'string') {
+            info.push(`ADDRESS: ${obj.address}`);
+          } else if (obj.address.streetAddress) {
+            const addr = [obj.address.streetAddress, obj.address.addressLocality, obj.address.postalCode, obj.address.addressCountry].filter(Boolean).join(', ');
+            info.push(`ADDRESS: ${addr}`);
+          }
+        }
+        if (obj.sameAs && Array.isArray(obj.sameAs)) {
+          for (const social of obj.sameAs) {
+            if (typeof social === 'string') {
+              info.push(`SOCIAL: ${social}`);
+            }
+          }
+        }
+        if (obj.contactPoint) {
+          const points = Array.isArray(obj.contactPoint) ? obj.contactPoint : [obj.contactPoint];
+          for (const point of points) {
+            if (point.telephone) info.push(`PHONE: ${point.telephone}`);
+            if (point.email) info.push(`EMAIL: ${point.email}`);
+          }
+        }
+        return info;
+      };
+
+      const contactInfo = extractContactInfo(jsonData);
+      if (contactInfo.length > 0) {
+        jsonLdBlocks.push(contactInfo.join('\n'));
+      }
+    } catch {
+      // Ignore invalid JSON-LD
+    }
+  }
+
+  return jsonLdBlocks.join('\n');
+}
+
+/**
  * Extract text content from HTML while preserving important structure
  * This creates a more LLM-friendly representation
  */
 function extractTextContent(html: string): string {
-  // First clean the HTML
+  // First extract JSON-LD structured data before cleaning
+  const jsonLdData = extractJsonLdData(html);
+
+  // Clean the HTML
   let text = cleanHTML(html);
 
   // Preserve tel: and mailto: links by converting them to readable format
+  // Standard href="tel:..." format
   text = text.replace(/href=["']tel:([^"']+)["']/gi, 'PHONE: $1 ');
   text = text.replace(/href=["']mailto:([^"']+)["']/gi, 'EMAIL: $1 ');
 
+  // Non-standard tel="..." attribute (used by some sites like thefrostedchick.com.sg)
+  text = text.replace(/\stel=["']([^"']+)["']/gi, ' PHONE: $1 ');
+
+  // WhatsApp links
+  text = text.replace(/href=["']https?:\/\/(?:api\.)?whatsapp\.com\/send\?phone=\s*(\d+)["']/gi, 'WHATSAPP: +$1 ');
+  text = text.replace(/href=["']https?:\/\/wa\.me\/(\d+)["']/gi, 'WHATSAPP: +$1 ');
+
   // Add newlines before major sections
-  text = text.replace(/<(h[1-6]|div|section|article|p|li|tr)[^>]*>/gi, '\n');
+  text = text.replace(/<(h[1-6]|div|section|article|p|li|tr|footer|header)[^>]*>/gi, '\n');
 
   // Remove all remaining HTML tags
   text = text.replace(/<[^>]+>/g, ' ');
@@ -165,6 +241,11 @@ function extractTextContent(html: string): string {
   text = text.replace(/[ \t]+/g, ' ');
   text = text.replace(/\n\s*\n/g, '\n');
   text = text.replace(/\n /g, '\n');
+
+  // Prepend JSON-LD data if found
+  if (jsonLdData) {
+    text = `--- Structured Data (JSON-LD) ---\n${jsonLdData}\n\n--- Page Content ---\n${text}`;
+  }
 
   return text.trim();
 }
