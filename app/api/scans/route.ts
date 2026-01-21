@@ -147,22 +147,8 @@ export async function POST(request: Request) {
           extractedResults.push(contactResult);
         } catch (contactError) {
           console.error("Error extracting contact details:", contactError);
-          // Fall back to extractDataPointFromContent if extractDataPoint fails
-          if (discoveryResult.crawledPages.size > 0) {
-            const sources = Array.from(discoveryResult.crawledPages.keys());
-            try {
-              const contactResult = await extractDataPointFromContent(
-                url,
-                normalizedDomain,
-                "contact_details",
-                discoveryResult.crawledPages,
-                sources
-              );
-              extractedResults.push(contactResult);
-            } catch (fallbackError) {
-              console.error("Fallback extraction also failed:", fallbackError);
-            }
-          }
+          // Don't fall back to extractDataPointFromContent - it doesn't discover contact pages
+          // and will miss contact details that aren't in sitemap-crawled pages
         }
       } catch (discoveryError) {
         console.error("Error during discovery pipeline:", discoveryError);
