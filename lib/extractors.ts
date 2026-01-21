@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { createHash } from "crypto";
 import {
@@ -11,16 +11,70 @@ import {
 } from "./browser";
 import { prisma } from "./prisma";
 
-// Lazy-initialize OpenAI client to avoid build-time errors
-let openai: OpenAI | null = null;
+// Lazy-initialize Anthropic client to avoid build-time errors
+let anthropic: Anthropic | null = null;
 
-function getOpenAI(): OpenAI {
-  if (!openai) {
-    openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+function getAnthropic(): Anthropic {
+  if (!anthropic) {
+    anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
     });
   }
-  return openai;
+  return anthropic;
+}
+
+// Rate limiting for Claude API calls
+let lastClaudeCallTime = 0;
+const MIN_DELAY_BETWEEN_CALLS_MS = 1000; // 1 second between calls to avoid rate limits
+
+async function rateLimitedClaudeCall<T>(
+  callFn: () => Promise<T>,
+  maxRetries: number = 3
+): Promise<T> {
+  // Ensure minimum delay between calls
+  const now = Date.now();
+  const timeSinceLastCall = now - lastClaudeCallTime;
+  if (timeSinceLastCall < MIN_DELAY_BETWEEN_CALLS_MS) {
+    const waitTime = MIN_DELAY_BETWEEN_CALLS_MS - timeSinceLastCall;
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      lastClaudeCallTime = Date.now();
+      return await callFn();
+    } catch (error: any) {
+      lastError = error;
+
+      // Check if it's a rate limit error (429)
+      const isRateLimitError =
+        error?.status === 429 ||
+        error?.error?.type === 'rate_limit_error' ||
+        error?.message?.includes('rate limit') ||
+        error?.message?.includes('429');
+
+      if (isRateLimitError && attempt < maxRetries) {
+        // Parse retry-after from error or use exponential backoff
+        let waitTime = 5000 * attempt; // Default: 5s, 10s, 15s
+
+        // Check for retry-after header in error
+        if (error?.headers?.['retry-after']) {
+          waitTime = parseInt(error.headers['retry-after']) * 1000 + 500;
+        }
+
+        console.log(`Claude rate limit hit (attempt ${attempt}/${maxRetries}), waiting ${waitTime}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      } else if (!isRateLimitError) {
+        // Non-rate-limit error, throw immediately
+        throw error;
+      }
+    }
+  }
+
+  // All retries exhausted
+  throw lastError;
 }
 
 // Data Point #1: Contact Details Schema
@@ -55,6 +109,7 @@ const aiGeneratedLikelihoodSchema = z.object({
     generator_meta: z.string().nullable(),
     tech_hints: z.array(z.string()),
     ai_markers: z.array(z.string()),
+    suspicious_content_patterns: z.array(z.string()).optional(), // New: nonsensical names, broken English, scam patterns
     infrastructure: z.object({
       has_robots_txt: z.boolean(),
       has_sitemap: z.boolean(),
@@ -104,15 +159,16 @@ Return a JSON object with:
 - addresses: Array of physical addresses found
 - contact_form_urls: Array of URLs with contact forms
 - social_links: Object with linkedin, twitter, facebook, instagram (nullable strings), and other (array)
-- notes: Any additional relevant notes about contact methods
+- notes: null (only set if there's a specific note about contact methods, NOT for explaining what you found or didn't find)
 
 Rules:
 1. Only use information from the target domain (${domain})
 2. Deduplicate all entries
 3. Look in HTML attributes like href="tel:..." or href="mailto:..."
-4. If nothing found, return empty arrays and nulls
+4. If nothing found, return empty arrays and nulls - do NOT explain why in the notes field
 5. Do not hallucinate or infer information not present
-6. Output MUST be valid JSON only, no additional text
+6. Output MUST be valid JSON only, no additional text or explanations
+7. The notes field should be null unless there's a specific actionable note (e.g., "Contact via WhatsApp only")
 
 Example output structure:
 {
@@ -298,35 +354,14 @@ function extractTextContent(html: string): string {
  * Common contact page URL patterns to try
  */
 const CONTACT_URL_PATTERNS = [
-  // Standard patterns
+  // Standard patterns - kept minimal since browser discovery is primary method
   '/contact-us',
   '/contact',
   '/contactus',
   '/contact-us.html',
   '/contact.html',
-  // Nested under about
-  '/about/contact',
-  '/about-us/contact',
-  '/about/contact-us',
-  '/about/contact.html',
-  // Nested under support
-  '/support/contact',
-  '/support/contact-us',
-  '/support/contact-us.html',
-  // For consumer/enterprise sites with sections
-  '/personal/support/contact-us.html',
-  '/personal/contact-us',
-  '/personal/contact',
-  '/consumer/contact',
-  '/consumer/support/contact-us',
-  // Other common patterns
   '/get-in-touch',
   '/reach-us',
-  '/help/contact',
-  '/company/contact',
-  '/info/contact',
-  '/customer-service',
-  '/customer-support',
 ];
 
 /**
@@ -508,11 +543,14 @@ async function fetchContactUrlsFromSitemap(sitemapUrl: string, baseUrl: string):
  */
 async function isContactPageValidWithBrowser(url: string, baseUrl: string, discoveredByClick: boolean = false): Promise<boolean> {
   try {
-    // Only accept URLs from the same domain
+    // Only accept URLs from the same domain (normalize www subdomain)
     const urlObj = new URL(url);
     const baseUrlObj = new URL(baseUrl);
-    if (urlObj.hostname !== baseUrlObj.hostname) {
-      console.log(`  Skipping external URL: ${url}`);
+    const normalizeHostname = (h: string) => h.replace(/^www\./, '');
+    const urlHost = normalizeHostname(urlObj.hostname);
+    const baseHost = normalizeHostname(baseUrlObj.hostname);
+    if (urlHost !== baseHost) {
+      console.log(`  Skipping external URL: ${url} (host: ${urlHost} != base: ${baseHost})`);
       return false;
     }
 
@@ -520,6 +558,19 @@ async function isContactPageValidWithBrowser(url: string, baseUrl: string, disco
     // The click-based discovery already validated it navigated somewhere meaningful
     if (discoveredByClick) {
       console.log(`  Trusting click-discovered contact URL: ${url}`);
+      return true;
+    }
+
+    // Trust URLs that have obvious contact patterns in the path
+    // This helps bypass bot protection that blocks validation requests
+    const pathLower = urlObj.pathname.toLowerCase();
+    // Match paths that start with contact OR contain /contact (e.g., /pages/contact-us for Shopify)
+    const hasObviousContactPath = (
+      /^\/(contact|contact-us|contactus|get-in-touch|reach-us|support\/contact)(\/?|\/.*)?$/i.test(pathLower) ||
+      /\/(contact|contact-us|contactus|get-in-touch|reach-us)(\/?|\?.*)?$/i.test(pathLower)
+    );
+    if (hasObviousContactPath) {
+      console.log(`  Trusting URL with obvious contact path: ${url}`);
       return true;
     }
 
@@ -533,8 +584,14 @@ async function isContactPageValidWithBrowser(url: string, baseUrl: string, disco
       timeout: 20000,
     });
 
-    if (!result.content || result.content.length < 500) {
-      console.log(`  Page has insufficient content: ${url}`);
+    // If we got blocked (403/401) or challenge page, trust URLs with contact in path
+    if (result.statusCode === 403 || result.statusCode === 401 || !result.content || result.content.length < 500) {
+      const hasContactInPath = /contact|enquir|get-in-touch|reach-us/i.test(pathLower);
+      if (hasContactInPath) {
+        console.log(`  Trusting contact URL despite bot protection (status: ${result.statusCode}): ${url}`);
+        return true;
+      }
+      console.log(`  Page has insufficient content or blocked: ${url}`);
       return false;
     }
 
@@ -552,8 +609,10 @@ async function isContactPageValidWithBrowser(url: string, baseUrl: string, disco
     return true;
   } catch (error) {
     console.log(`  Error validating contact page ${url}:`, error);
-    // For click-discovered URLs, return true even on error (trust the click)
-    return discoveredByClick;
+    // For click-discovered URLs or URLs with contact in path, return true even on error
+    const pathLower = new URL(url).pathname.toLowerCase();
+    const hasContactInPath = /contact|enquir|get-in-touch|reach-us/i.test(pathLower);
+    return discoveredByClick || hasContactInPath;
   }
 }
 
@@ -630,6 +689,7 @@ async function fetchAndCleanPage(url: string, useBrowser: boolean = false): Prom
     if (useBrowser) {
       // Use headless browser for JavaScript-rendered content
       // Pass null for scanId to skip database logging
+      console.log(`[fetchAndCleanPage] Using browser for: ${url}`);
       const result = await fetchWithBrowser(null, url, "extractor", {
         waitForNetworkIdle: true,
         expandSections: true,
@@ -637,14 +697,20 @@ async function fetchAndCleanPage(url: string, useBrowser: boolean = false): Prom
         additionalWaitMs: 1000,
       });
 
+      console.log(`[fetchAndCleanPage] Browser result - status: ${result.statusCode}, contentLength: ${result.content?.length || 0}`);
+
       if (result.content) {
         // Use extractTextContent for better LLM processing
-        return extractTextContent(result.content);
+        const extracted = extractTextContent(result.content);
+        console.log(`[fetchAndCleanPage] Extracted text length: ${extracted.length}`);
+        return extracted;
       }
+      console.log(`[fetchAndCleanPage] No content from browser`);
       return "";
     }
 
     // Standard HTTP fetch
+    console.log(`[fetchAndCleanPage] Standard fetch for: ${url}`);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -656,21 +722,33 @@ async function fetchAndCleanPage(url: string, useBrowser: boolean = false): Prom
     });
 
     clearTimeout(timeoutId);
+    console.log(`[fetchAndCleanPage] Standard fetch status: ${response.status}`);
 
     if (response.ok) {
       const rawHtml = await response.text();
 
       // Check if we should retry with browser
       if (shouldUseBrowser(rawHtml) || hasHiddenContactContent(rawHtml, url)) {
-        console.log(`Detected dynamic content on ${url}, retrying with browser...`);
+        console.log(`[fetchAndCleanPage] Detected dynamic content on ${url}, retrying with browser...`);
         return fetchAndCleanPage(url, true);
       }
 
       // Use extractTextContent for better LLM processing
       return extractTextContent(rawHtml);
     }
+
+    // If we got 403 or other error, retry with browser (bot protection bypass)
+    if (response.status === 403 || response.status === 401) {
+      console.log(`[fetchAndCleanPage] Got ${response.status} on ${url}, retrying with browser...`);
+      return fetchAndCleanPage(url, true);
+    }
   } catch (fetchError) {
-    console.warn(`Could not fetch ${url}:`, fetchError);
+    console.warn(`[fetchAndCleanPage] Could not fetch ${url}:`, fetchError);
+    // On fetch error, try with browser as fallback
+    if (!useBrowser) {
+      console.log(`[fetchAndCleanPage] Fetch failed for ${url}, retrying with browser...`);
+      return fetchAndCleanPage(url, true);
+    }
   }
 
   return "";
@@ -693,7 +771,9 @@ export async function extractDataPoint(
 
   try {
     // Fetch the homepage content
+    console.log(`[extractDataPoint] Fetching homepage: ${url}`);
     let websiteContent = await fetchAndCleanPage(url);
+    console.log(`[extractDataPoint] Homepage content length: ${websiteContent.length}`);
     const sources: string[] = [url];
 
     // Track discovered contact page URL to override OpenAI's guess
@@ -711,8 +791,9 @@ export async function extractDataPoint(
 
       if (isAlreadyContactPage) {
         // The input URL is already a contact page - fetch it with browser
-        console.log(`Input URL is already a contact page: ${url}`);
+        console.log(`[extractDataPoint] Input URL is already a contact page: ${url}`);
         const contactContent = await fetchAndCleanPage(url, true);
+        console.log(`[extractDataPoint] Contact page content length: ${contactContent.length}`);
         if (contactContent && contactContent.length > 200) {
           // Replace homepage content with better contact page content
           websiteContent = contactContent;
@@ -723,16 +804,25 @@ export async function extractDataPoint(
         // 1. Try common URL patterns (/contact, /contact-us, etc.)
         // 2. Check robots.txt for sitemaps
         // 3. Parse sitemaps to find contact pages
+        console.log(`[extractDataPoint] Discovering contact page for: ${baseUrl}`);
         const contactPageUrl = await discoverContactPageUrl(baseUrl);
+        console.log(`[extractDataPoint] Discovered contact page: ${contactPageUrl}`);
 
         if (contactPageUrl) {
           // Fetch the discovered contact page with browser to expand dynamic sections
+          console.log(`[extractDataPoint] Fetching contact page with browser: ${contactPageUrl}`);
           const contactContent = await fetchAndCleanPage(contactPageUrl, true);
+          console.log(`[extractDataPoint] Contact page content length: ${contactContent.length}`);
           if (contactContent && contactContent.length > 200) {
             websiteContent += `\n\n--- Contact Page (${contactPageUrl}) ---\n\n${contactContent}`;
             sources.push(contactPageUrl);
             discoveredContactPageUrl = contactPageUrl;
+            console.log(`[extractDataPoint] Added contact page to content. Total length: ${websiteContent.length}`);
+          } else {
+            console.log(`[extractDataPoint] Contact page content too short or empty, not adding`);
           }
+        } else {
+          console.log(`[extractDataPoint] No contact page discovered`);
         }
       }
 
@@ -749,30 +839,28 @@ export async function extractDataPoint(
       }
     }
 
-    // Call OpenAI with the website content
-    const completion = await getOpenAI().chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You extract website intelligence signals for risk assessment. You will be provided with text content extracted from a website. Look carefully for phone numbers (in any international or local format), email addresses, physical addresses, and social media links. Output must match the JSON schema exactly. Return ONLY valid JSON, no additional text or markdown formatting. If you cannot find specific information, return empty arrays and null values - do not hallucinate data.",
-        },
-        {
-          role: "user",
-          content: `${extractor.prompt(url, domain)}\n\nWebsite HTML content:\n\n${websiteContent}`,
-        },
-      ],
-      temperature: 0.1,
-    });
+    // Call Claude with the website content (rate-limited)
+    const response = await rateLimitedClaudeCall(() =>
+      getAnthropic().messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: "You extract website intelligence signals for risk assessment. You will be provided with text content extracted from a website. Look carefully for phone numbers (in any international or local format), email addresses, physical addresses, and social media links. Output must match the JSON schema exactly. Return ONLY valid JSON, no additional text or markdown formatting. If you cannot find specific information, return empty arrays and null values - do not hallucinate data.",
+        messages: [
+          {
+            role: "user",
+            content: `${extractor.prompt(url, domain)}\n\nWebsite HTML content:\n\n${websiteContent}`,
+          },
+        ],
+      })
+    );
 
-    const message = completion.choices[0]?.message;
-    if (!message) {
-      throw new Error("No response from OpenAI");
+    const textBlock = response.content.find((block) => block.type === "text");
+    if (!textBlock || textBlock.type !== "text") {
+      throw new Error("No response from Claude");
     }
 
     // Parse the JSON response
-    let content = message.content?.trim() || "{}";
+    let content = textBlock.text.trim() || "{}";
 
     // Remove markdown code blocks if present
     content = content.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
@@ -784,7 +872,7 @@ export async function extractDataPoint(
     const validatedValue = extractor.schema.parse(parsedValue);
 
     // Override primary_contact_page_url with the discovered URL if we found a valid one
-    // This ensures we use our validated URL instead of OpenAI's guess
+    // This ensures we use our validated URL instead of Claude's guess
     if (dataPointKey === "contact_details" && discoveredContactPageUrl) {
       validatedValue.primary_contact_page_url = discoveredContactPageUrl;
     }
@@ -794,7 +882,7 @@ export async function extractDataPoint(
       label: extractor.label,
       value: validatedValue,
       sources,
-      rawOpenAIResponse: completion,
+      rawOpenAIResponse: response,
     };
   } catch (error) {
     console.error(`Error extracting data point ${dataPointKey}:`, error);
@@ -860,30 +948,28 @@ export async function extractDataPointFromContent(
       }
     }
 
-    // Call OpenAI with the website content
-    const completion = await getOpenAI().chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You extract website intelligence signals for risk assessment. You will be provided with text content extracted from a website. Look carefully for phone numbers (in any international or local format), email addresses, physical addresses, and social media links. Output must match the JSON schema exactly. Return ONLY valid JSON, no additional text or markdown formatting. If you cannot find specific information, return empty arrays and null values - do not hallucinate data.",
-        },
-        {
-          role: "user",
-          content: `${extractor.prompt(url, domain)}\n\nWebsite HTML content:\n\n${websiteContent}`,
-        },
-      ],
-      temperature: 0.1,
-    });
+    // Call Claude with the website content (rate-limited)
+    const response = await rateLimitedClaudeCall(() =>
+      getAnthropic().messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: "You extract website intelligence signals for risk assessment. You will be provided with text content extracted from a website. Look carefully for phone numbers (in any international or local format), email addresses, physical addresses, and social media links. Output must match the JSON schema exactly. Return ONLY valid JSON, no additional text or markdown formatting. If you cannot find specific information, return empty arrays and null values - do not hallucinate data.",
+        messages: [
+          {
+            role: "user",
+            content: `${extractor.prompt(url, domain)}\n\nWebsite HTML content:\n\n${websiteContent}`,
+          },
+        ],
+      })
+    );
 
-    const message = completion.choices[0]?.message;
-    if (!message) {
-      throw new Error("No response from OpenAI");
+    const textBlock = response.content.find((block) => block.type === "text");
+    if (!textBlock || textBlock.type !== "text") {
+      throw new Error("No response from Claude");
     }
 
     // Parse the JSON response
-    let content = message.content?.trim() || "{}";
+    let content = textBlock.text.trim() || "{}";
 
     // Remove markdown code blocks if present
     content = content.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
@@ -910,7 +996,7 @@ export async function extractDataPointFromContent(
       label: extractor.label,
       value: validatedValue,
       sources,
-      rawOpenAIResponse: completion,
+      rawOpenAIResponse: response,
     };
   } catch (error) {
     console.error(`Error extracting data point ${dataPointKey}:`, error);
@@ -979,6 +1065,93 @@ const AI_MARKER_PATTERNS: Array<{
   { pattern: /chatgpt|gpt-4|claude|anthropic/i, description: "References AI model names", score: 25 },
   { pattern: /lorem\s*ipsum/i, description: "Contains placeholder text", score: 15 },
 ];
+
+/**
+ * Patterns indicating suspicious/scam content commonly found on AI-generated fake stores
+ * These detect nonsensical product names, broken English, and machine translation artifacts
+ */
+const SUSPICIOUS_CONTENT_PATTERNS: Array<{
+  pattern: RegExp;
+  description: string;
+  score: number;
+  minMatches?: number; // Require multiple matches to trigger (default 1)
+}> = [
+  // Nonsensical product naming patterns (e.g., "Hahaha·Round Neck Version")
+  { pattern: /(?:hahaha|hehe|hihi|lol|wow)[·\-\s]+[a-z]/i, description: "Nonsensical product name prefix (e.g., 'Hahaha·')", score: 35 },
+
+  // Unusual punctuation in product names (middle dots, weird separators)
+  { pattern: /[A-Za-z]+[·•]+[A-Za-z]+\s+(?:version|edition|style|type|model)/i, description: "Unusual punctuation in product names", score: 25 },
+
+  // Overly literal/awkward translations (common in machine-translated content)
+  { pattern: /curved\s+blade\s+guard|straight\s+tube\s+pants|wide\s+leg\s+version/i, description: "Awkward literal translation patterns", score: 30 },
+  { pattern: /(?:small|big|large)\s+(?:fragrance|smell)\s+(?:version|type)/i, description: "Nonsensical fragrance descriptions", score: 30 },
+
+  // Generic scam store patterns
+  { pattern: /\b(?:high\s+quality|best\s+quality|top\s+quality)\s+(?:cheap|low\s+price|discount)/i, description: "Suspicious quality + price claims", score: 25 },
+  { pattern: /\b(?:factory|warehouse)\s+direct\s+(?:sale|price|shipping)/i, description: "Factory direct sale claims", score: 20 },
+  { pattern: /\b(?:limited\s+time|flash\s+sale|clearance)\s+(?:\d+%\s+off|\$\d+)/i, description: "Aggressive discount language", score: 15 },
+
+  // Broken English patterns (grammar issues common in scam sites)
+  { pattern: /\bvery\s+(?:much\s+)?(?:good|nice|beautiful)\s+(?:quality|product|item)\b/i, description: "Broken English quality claims", score: 20 },
+  { pattern: /\b(?:welcome\s+to\s+)?(?:our\s+)?(?:shop|store)\s+(?:buy|purchase)\b/i, description: "Awkward shopping invitation", score: 15 },
+  { pattern: /\bship(?:ping)?\s+(?:from|to)\s+(?:fast|quick|speed)/i, description: "Broken shipping description", score: 20 },
+
+  // Suspicious sizing/variant descriptions
+  { pattern: /\b(?:asian|china|chinese)\s+size\b/i, description: "Suspicious sizing disclaimer", score: 15 },
+  { pattern: /\bplease\s+(?:check|see|read)\s+(?:size\s+)?chart\s+(?:carefully|before)/i, description: "Excessive sizing warnings", score: 10, minMatches: 3 },
+
+  // Fake urgency/scarcity patterns
+  { pattern: /\b(?:only|just)\s+\d+\s+(?:left|remaining|pieces?|items?)\s+(?:in\s+stock)?/i, description: "Fake scarcity claims", score: 20 },
+  { pattern: /\b(?:order|buy)\s+(?:now|today)\s+(?:get|receive)\s+(?:free|gift)/i, description: "Fake urgency with gift claims", score: 20 },
+
+  // Nonsensical category combinations
+  { pattern: /\b(?:men|women|unisex)\s+(?:casual|fashion)\s+(?:streetwear|vintage)\s+(?:loose|slim)\b/i, description: "Keyword-stuffed product categories", score: 25 },
+
+  // Machine translation artifacts
+  { pattern: /\bthe\s+(?:is|are|was|were)\s+(?:very|so|too)\b/i, description: "Grammar error (article misuse)", score: 15, minMatches: 2 },
+  { pattern: /\b(?:it|this|that)\s+(?:is|are)\s+(?:a|an)\s+(?:very|so)\b/i, description: "Awkward intensifier usage", score: 15, minMatches: 2 },
+
+  // Suspicious review/testimonial patterns
+  { pattern: /\b(?:5\s+stars?|excellent|perfect)\s+(?:product|item|quality)\s+(?:fast|quick)\s+(?:shipping|delivery)/i, description: "Templated fake review pattern", score: 25 },
+  { pattern: /\bgood\s+(?:seller|shop|store)\s+(?:recommend|recommended)\b/i, description: "Generic fake review", score: 20 },
+
+  // Product description nonsense
+  { pattern: /\b(?:suitable|perfect)\s+for\s+(?:daily|everyday)\s+(?:wear|use|wearing)\s+(?:and|or)\s+(?:party|dating|travel)/i, description: "Overly broad usage claims", score: 15 },
+];
+
+/**
+ * Detect suspicious content patterns in text
+ * Returns detected patterns and total score contribution
+ */
+function detectSuspiciousContent(text: string): {
+  patterns: string[];
+  score: number;
+  reasons: string[];
+} {
+  const detectedPatterns: string[] = [];
+  const reasons: string[] = [];
+  let totalScore = 0;
+
+  for (const { pattern, description, score, minMatches = 1 } of SUSPICIOUS_CONTENT_PATTERNS) {
+    const matches = text.match(new RegExp(pattern, 'gi'));
+    if (matches && matches.length >= minMatches) {
+      detectedPatterns.push(description);
+      totalScore += score;
+      if (matches.length >= 3) {
+        reasons.push(`${description} (found ${matches.length} instances)`);
+      } else {
+        reasons.push(description);
+      }
+    }
+  }
+
+  // Cap the score contribution from suspicious content
+  return {
+    patterns: detectedPatterns,
+    score: Math.min(60, totalScore), // Cap at 60 to avoid over-penalizing
+    reasons: reasons.slice(0, 4), // Limit reasons
+  };
+}
 
 /**
  * Free hosting platforms that are commonly used for quick AI-generated sites
@@ -1344,12 +1517,14 @@ function extractRelevantHeaders(headers?: Record<string, string>): Record<string
 function computeMarkupSignals(
   headHtml: string,
   fullHtml: string,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  textContent?: string
 ): {
   markupSubscore: number;
   generatorMeta: string | null;
   techHints: string[];
   aiMarkers: string[];
+  suspiciousContentPatterns: string[];
   reasons: string[];
 } {
   const techHints: string[] = [];
@@ -1403,6 +1578,17 @@ function computeMarkupSignals(
     }
   }
 
+  // Check for suspicious content patterns (nonsensical names, broken English, scam indicators)
+  const contentToAnalyze = textContent || fullHtml;
+  const suspiciousContent = detectSuspiciousContent(contentToAnalyze);
+  const suspiciousContentPatterns = suspiciousContent.patterns;
+
+  if (suspiciousContent.score > 0) {
+    markupSubscore = Math.min(100, markupSubscore + suspiciousContent.score);
+    // Add top suspicious content reasons
+    reasons.push(...suspiciousContent.reasons.slice(0, 2));
+  }
+
   // Check headers for additional signals
   if (headers) {
     const relevantHeaders = extractRelevantHeaders(headers);
@@ -1436,7 +1622,8 @@ function computeMarkupSignals(
     generatorMeta,
     techHints: uniqueTechHints,
     aiMarkers,
-    reasons: reasons.slice(0, 3), // Limit to 3 reasons from markup
+    suspiciousContentPatterns,
+    reasons: reasons.slice(0, 5), // Increased limit to include suspicious content reasons
   };
 }
 
@@ -1585,14 +1772,14 @@ async function getOrFetchHomepageArtifacts(
 /**
  * Call OpenAI to analyze homepage content for AI-generated likelihood
  */
-async function analyzeWithOpenAI(
+async function analyzeWithClaude(
   textSnippet: string,
   headHtml: string,
   headers: Record<string, string | null>,
   deterministicSignals: ReturnType<typeof computeMarkupSignals>,
   infrastructureSignals: Awaited<ReturnType<typeof computeInfrastructureSignals>>
 ): Promise<AiGeneratedLikelihood> {
-  const systemPrompt = `You are an AI content analyst helping assess whether a website's homepage appears to be AI-generated.
+  const systemPrompt = `You are an AI content analyst helping assess whether a website's homepage appears to be AI-generated or is a potential scam/fake store.
 
 IMPORTANT GUIDELINES:
 - You are providing a HEURISTIC ESTIMATE, not a definitive judgment
@@ -1601,11 +1788,23 @@ IMPORTANT GUIDELINES:
 - Consider that many legitimate websites use templates, no-code builders, or AI assistance
 - Low text volume or minimal content should reduce confidence, not increase AI score
 
+SUSPICIOUS CONTENT INDICATORS (strong signals of AI-generated scam sites):
+- Nonsensical or gibberish product names (e.g., "Hahaha·Round Neck Version", "Curved Blade Guard Trousers")
+- Unusual punctuation in product names (middle dots ·, random symbols)
+- Broken English or awkward machine translation artifacts
+- Overly literal translations that don't make sense in context
+- Keyword-stuffed category combinations ("Men Casual Fashion Streetwear Vintage Loose")
+- Fake urgency/scarcity claims ("Only 3 left!", "Flash sale ends in...")
+- Templated fake reviews ("5 stars, fast shipping, good seller recommend")
+- Suspicious sizing disclaimers ("Asian size", "Please check size chart carefully before order")
+- Factory direct/warehouse sale claims combined with very low prices
+
 SCORING CRITERIA for content_subscore (0-100):
 - 0-30: Content appears naturally written, unique voice, specific details, industry expertise
 - 31-50: Mixed signals or insufficient content to assess
 - 51-70: Some generic patterns, template-like phrasing, but could be human-written
-- 71-100: Strong AI markers (overly formal, generic buzzwords, lacks specificity)
+- 71-85: Strong AI markers (overly formal, generic buzzwords, lacks specificity)
+- 86-100: Clear scam indicators (nonsensical names, broken English, fake reviews)
 
 SCORING CRITERIA for markup_subscore (0-100):
 - 0-30: Custom development, unique structure, hand-crafted feel
@@ -1632,6 +1831,7 @@ Return ONLY valid JSON matching this exact schema:
     "generator_meta": <string or null>,
     "tech_hints": [<string array>],
     "ai_markers": [<string array>],
+    "suspicious_content_patterns": [<string array - list specific nonsensical names, broken English examples, or scam indicators found>],
     "infrastructure": {
       "has_robots_txt": <boolean>,
       "has_sitemap": <boolean>,
@@ -1645,12 +1845,13 @@ Return ONLY valid JSON matching this exact schema:
   "notes": <string or null>
 }`;
 
-  const userPrompt = `Analyze this homepage for AI-generated likelihood.
+  const userPrompt = `Analyze this homepage for AI-generated likelihood and potential scam indicators.
 
 DETECTED SIGNALS (from deterministic analysis):
 - Generator: ${deterministicSignals.generatorMeta || "Unknown"}
 - Tech hints: ${deterministicSignals.techHints.join(", ") || "None detected"}
 - AI markers found: ${deterministicSignals.aiMarkers.join(", ") || "None"}
+- Suspicious content patterns found: ${deterministicSignals.suspiciousContentPatterns.join(", ") || "None"}
 - Initial markup subscore: ${deterministicSignals.markupSubscore}
 
 INFRASTRUCTURE SIGNALS:
@@ -1677,31 +1878,36 @@ Based on the above, provide your AI-generated likelihood assessment. Remember:
 - Consider that no-code builders != AI-generated content
 - Missing robots.txt, sitemap, or favicon is a signal but not definitive
 - Free hosting platforms increase suspicion but many legitimate projects use them
+- IMPORTANT: Look carefully for nonsensical product names, broken English, and scam patterns in the text content
+- If you find gibberish names like "Hahaha·Round Neck Version" or broken translations, this strongly indicates AI-generated scam content
+- Include specific examples of suspicious content in the suspicious_content_patterns array
 - The final ai_generated_score should be: round(0.55 * content + 0.25 * markup + 0.20 * infrastructure)`;
 
   try {
-    const completion = await getOpenAI().chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-    });
+    // Rate-limited Claude call with automatic retry on 429 errors
+    const response = await rateLimitedClaudeCall(() =>
+      getAnthropic().messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: [
+          { role: "user", content: userPrompt },
+        ],
+      })
+    );
 
-    const message = completion.choices[0]?.message;
-    if (!message?.content) {
-      throw new Error("No response from OpenAI");
+    const textBlock = response.content.find((block) => block.type === "text");
+    if (!textBlock || textBlock.type !== "text") {
+      throw new Error("No response from Claude");
     }
 
-    let content = message.content.trim();
+    let content = textBlock.text.trim();
     content = content.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
 
     const parsed = JSON.parse(content);
     return aiGeneratedLikelihoodSchema.parse(parsed);
   } catch (error) {
-    console.error("OpenAI analysis error:", error);
+    console.error("Claude analysis error:", error);
     throw error;
   }
 }
@@ -1726,6 +1932,7 @@ function createFallbackResult(
       generator_meta: deterministicSignals?.generatorMeta ?? null,
       tech_hints: deterministicSignals?.techHints ?? [],
       ai_markers: deterministicSignals?.aiMarkers ?? [],
+      suspicious_content_patterns: deterministicSignals?.suspiciousContentPatterns ?? [],
       infrastructure: infrastructureSignals?.signals ?? {
         has_robots_txt: false,
         has_sitemap: false,
@@ -1789,8 +1996,8 @@ export async function extractAiGeneratedLikelihood(
       headers = artifacts.headers;
     }
 
-    // Compute deterministic markup signals
-    const deterministicSignals = computeMarkupSignals(headHtml, htmlSnippet, headers);
+    // Compute deterministic markup signals (pass textSnippet for suspicious content detection)
+    const deterministicSignals = computeMarkupSignals(headHtml, htmlSnippet, headers, textSnippet);
 
     // Compute infrastructure signals (robots.txt, sitemap, favicon, etc.)
     console.log("Computing infrastructure signals...");
@@ -1810,13 +2017,13 @@ export async function extractAiGeneratedLikelihood(
       additionalNotes.push("Limited text content");
     }
 
-    // Call OpenAI for analysis
+    // Call Claude for analysis
     let result: AiGeneratedLikelihood;
     let rawResponse: any = null;
 
     try {
       const headersSafe = extractRelevantHeaders(headers);
-      result = await analyzeWithOpenAI(
+      result = await analyzeWithClaude(
         textSnippet,
         headHtml,
         headersSafe,
@@ -1832,9 +2039,9 @@ export async function extractAiGeneratedLikelihood(
         result.notes = [result.notes, ...additionalNotes].filter(Boolean).join("; ") || null;
       }
 
-      rawResponse = { model: "gpt-4o", analysis: "completed" };
-    } catch (openaiError) {
-      console.error("OpenAI call failed, using deterministic signals only:", openaiError);
+      rawResponse = { model: "claude-sonnet-4-20250514", analysis: "completed" };
+    } catch (claudeError) {
+      console.error("Claude call failed, using deterministic signals only:", claudeError);
 
       // Create result from deterministic signals only
       const markupScore = deterministicSignals.markupSubscore;
@@ -1860,19 +2067,20 @@ export async function extractAiGeneratedLikelihood(
           generator_meta: deterministicSignals.generatorMeta,
           tech_hints: deterministicSignals.techHints,
           ai_markers: deterministicSignals.aiMarkers,
+          suspicious_content_patterns: deterministicSignals.suspiciousContentPatterns,
           infrastructure: infrastructureSignals.signals,
         },
         reasons: allReasons.length > 0
           ? allReasons
           : ["Insufficient data for content analysis"],
         notes: [
-          "Model unavailable - using markup and infrastructure signals only",
+          "Claude unavailable - using markup and infrastructure signals only",
           ...additionalNotes,
         ].join("; "),
       };
 
       rawResponse = {
-        error: openaiError instanceof Error ? openaiError.message : "Unknown error",
+        error: claudeError instanceof Error ? claudeError.message : "Unknown error",
         fallback: true,
       };
     }

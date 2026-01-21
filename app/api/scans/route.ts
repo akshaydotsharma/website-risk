@@ -9,6 +9,8 @@ import {
 } from "@/lib/utils";
 import { extractDataPoint, extractDataPointFromContent, extractAiGeneratedLikelihood } from "@/lib/extractors";
 import { isDomainAuthorized, runDiscoveryPipeline } from "@/lib/discovery";
+import { runRiskIntelPipeline, runHomepageSkuExtraction } from "@/lib/domainIntel";
+import type { DomainPolicy } from "@/lib/domainIntel/schemas";
 
 const createScanSchema = z.object({
   url: z.string().url("Invalid URL format"),
@@ -138,20 +140,28 @@ export async function POST(request: Request) {
           }
         }
 
-        // Extract contact details from crawled content
-        if (discoveryResult.crawledPages.size > 0) {
-          const sources = Array.from(discoveryResult.crawledPages.keys());
-          try {
-            const contactResult = await extractDataPointFromContent(
-              url,
-              normalizedDomain,
-              "contact_details",
-              discoveryResult.crawledPages,
-              sources
-            );
-            extractedResults.push(contactResult);
-          } catch (contactError) {
-            console.error("Error extracting contact details:", contactError);
+        // Extract contact details - use extractDataPoint which handles contact page discovery
+        // This ensures we find the contact page even if the sitemap-based crawl didn't include it
+        try {
+          const contactResult = await extractDataPoint(url, normalizedDomain, "contact_details");
+          extractedResults.push(contactResult);
+        } catch (contactError) {
+          console.error("Error extracting contact details:", contactError);
+          // Fall back to extractDataPointFromContent if extractDataPoint fails
+          if (discoveryResult.crawledPages.size > 0) {
+            const sources = Array.from(discoveryResult.crawledPages.keys());
+            try {
+              const contactResult = await extractDataPointFromContent(
+                url,
+                normalizedDomain,
+                "contact_details",
+                discoveryResult.crawledPages,
+                sources
+              );
+              extractedResults.push(contactResult);
+            } catch (fallbackError) {
+              console.error("Fallback extraction also failed:", fallbackError);
+            }
           }
         }
       } catch (discoveryError) {
@@ -185,6 +195,52 @@ export async function POST(request: Request) {
       extractedResults.push(aiResult);
     } catch (aiError) {
       console.error("Error extracting AI-generated likelihood:", aiError);
+    }
+
+    // Run risk intelligence pipeline (runs for all domains)
+    // Uses custom config from AuthorizedDomain if available, otherwise safe defaults
+    // This persists its own data points (domain_intel_signals, domain_risk_assessment)
+    try {
+      const riskResult = await runRiskIntelPipeline(scan.id, url);
+      if (riskResult.error) {
+        console.warn("Risk intelligence pipeline completed with errors:", riskResult.error);
+      } else {
+        console.log(
+          `Risk assessment for ${normalizedDomain}: ` +
+          `score=${riskResult.assessment.overall_risk_score}, ` +
+          `type=${riskResult.assessment.primary_risk_type}, ` +
+          `confidence=${riskResult.assessment.confidence}`
+        );
+      }
+    } catch (riskError) {
+      console.error("Error running risk intelligence pipeline:", riskError);
+      // Don't fail the scan - just log the error
+    }
+
+    // Run homepage SKU extraction (only for authorized domains)
+    if (authResult.authorized && authResult.config) {
+      try {
+        const skuPolicy: DomainPolicy = {
+          isAuthorized: true,
+          allowSubdomains: authResult.config.allowSubdomains,
+          respectRobots: authResult.config.respectRobots,
+          allowRobotsDisallowed: false,
+          maxPagesPerRun: authResult.config.maxPagesPerScan,
+          maxDepth: 2,
+          crawlDelayMs: authResult.config.crawlDelayMs,
+          requestTimeoutMs: 8000,
+        };
+
+        const skuResult = await runHomepageSkuExtraction(scan.id, url, skuPolicy);
+        console.log(
+          `Homepage SKU extraction for ${normalizedDomain}: ` +
+          `found ${skuResult.items.length} SKUs, ` +
+          `${skuResult.summary.withPrice} with price`
+        );
+      } catch (skuError) {
+        console.error("Error running homepage SKU extraction:", skuError);
+        // Don't fail the scan - just log the error
+      }
     }
 
     // Save extracted data points (both to scan and domain)

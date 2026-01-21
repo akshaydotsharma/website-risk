@@ -16,7 +16,10 @@ import { ExternalLink, Mail, Phone, MapPin, Link2, Globe, Activity, CheckCircle,
 import Link from "next/link";
 import { RescanButton } from "./rescan-button";
 import { AiScanButton } from "./ai-scan-button";
+import { RiskScanButton } from "./risk-scan-button";
+import { HomepageSkusCard } from "./homepage-skus-card";
 import type { ContactDetails, AiGeneratedLikelihood } from "@/lib/extractors";
+import type { RiskAssessment, DomainIntelSignals } from "@/lib/domainIntel/schemas";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +35,9 @@ async function getDomainData(id: string) {
         include: {
           dataPoints: true,
           crawlFetchLogs: {
+            orderBy: { createdAt: "asc" },
+          },
+          signalLogs: {
             orderBy: { createdAt: "asc" },
           },
         },
@@ -60,6 +66,9 @@ async function getDomainData(id: string) {
             include: {
               dataPoints: true,
               crawlFetchLogs: {
+                orderBy: { createdAt: "asc" },
+              },
+              signalLogs: {
                 orderBy: { createdAt: "asc" },
               },
             },
@@ -116,6 +125,10 @@ export default async function ScanDetailPage({
             </a>
           </div>
           <div className="flex items-center gap-2">
+            <RiskScanButton
+              domainId={domain.id}
+              hasExistingRiskScore={domain.dataPoints.some(dp => dp.key === "domain_risk_assessment")}
+            />
             <AiScanButton
               domainId={domain.id}
               hasExistingAiScore={domain.dataPoints.some(dp => dp.key === "ai_generated_likelihood")}
@@ -158,35 +171,6 @@ export default async function ScanDetailPage({
         </CardContent>
       </Card>
 
-      {/* URL Input History */}
-      {domain.urlInputs.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <History className="h-5 w-5" />
-              URL Input History
-            </CardTitle>
-            <CardDescription>
-              Different URL formats that resolved to this domain
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {domain.urlInputs.map((input) => (
-                <div key={input.id} className="flex items-center justify-between text-sm">
-                  <code className="bg-muted px-2 py-1 rounded text-xs">
-                    {input.rawInput}
-                  </code>
-                  <span className="text-muted-foreground text-xs">
-                    {formatDistanceToNow(new Date(input.createdAt), { addSuffix: true })}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Data Points Section (Domain-level - latest merged data) */}
       <div>
         <h2 className="text-2xl font-bold mb-4">Data Points Extracted</h2>
@@ -224,6 +208,24 @@ export default async function ScanDetailPage({
                 );
               }
 
+              if (dataPoint.key === "domain_risk_assessment") {
+                return (
+                  <RiskAssessmentCard
+                    key={dataPoint.id}
+                    data={value as RiskAssessment}
+                  />
+                );
+              }
+
+              if (dataPoint.key === "domain_intel_signals") {
+                return (
+                  <DomainIntelSignalsCard
+                    key={dataPoint.id}
+                    data={value as DomainIntelSignals}
+                  />
+                );
+              }
+
               // Generic fallback for unknown data point types
               return (
                 <Card key={dataPoint.id}>
@@ -242,16 +244,13 @@ export default async function ScanDetailPage({
         )}
       </div>
 
+      {/* Homepage SKUs */}
+      <HomepageSkusCard domainId={domain.id} />
+
       {/* Sources */}
       {domain.dataPoints.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Sources</CardTitle>
-            <CardDescription>
-              Web pages used to extract intelligence
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+        <Accordion>
+          <AccordionItem title="Sources - Web pages used to extract intelligence">
             <div className="space-y-2">
               {domain.dataPoints.map((dataPoint: any) => {
                 const sources = JSON.parse(dataPoint.sources) as string[];
@@ -269,8 +268,8 @@ export default async function ScanDetailPage({
                 ));
               })}
             </div>
-          </CardContent>
-        </Card>
+          </AccordionItem>
+        </Accordion>
       )}
 
       {/* Raw Output */}
@@ -294,17 +293,8 @@ export default async function ScanDetailPage({
 
       {/* Crawl Activity Log (from latest scan) */}
       {latestScan && latestScan.crawlFetchLogs && latestScan.crawlFetchLogs.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Activity className="h-5 w-5" />
-              Crawl Activity Log
-            </CardTitle>
-            <CardDescription>
-              HTTP requests from the most recent scan ({format(new Date(latestScan.checkedAt), "PPp")})
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+        <Accordion>
+          <AccordionItem title={`Crawl Activity Log - ${latestScan.crawlFetchLogs.length} requests`}>
             <div className="border rounded-lg overflow-hidden">
               <Table>
                 <TableHeader>
@@ -389,6 +379,80 @@ export default async function ScanDetailPage({
                 Failed: {latestScan.crawlFetchLogs.filter((l: any) => !l.statusCode || l.statusCode >= 400).length}
               </span>
             </div>
+          </AccordionItem>
+        </Accordion>
+      )}
+
+      {/* Signal Logs (from latest scan) */}
+      {latestScan && latestScan.signalLogs && latestScan.signalLogs.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5" />
+              Signal Logs
+            </CardTitle>
+            <CardDescription>
+              Computed signals from risk intelligence analysis
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="border rounded-lg overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[120px]">Category</TableHead>
+                    <TableHead className="w-[180px]">Signal</TableHead>
+                    <TableHead>Value</TableHead>
+                    <TableHead className="w-[80px]">Severity</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {latestScan.signalLogs.slice(0, 50).map((log: any) => (
+                    <TableRow key={log.id}>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs capitalize">
+                          {log.category.replace("_", " ")}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {log.name}
+                      </TableCell>
+                      <TableCell className="text-xs max-w-xs truncate">
+                        {log.valueType === "boolean" ? (
+                          log.valueBoolean ? (
+                            <CheckCircle className="h-4 w-4 text-green-600" />
+                          ) : (
+                            <XCircle className="h-4 w-4 text-red-600" />
+                          )
+                        ) : log.valueType === "number" ? (
+                          <span className="font-mono">{log.valueNumber}</span>
+                        ) : log.valueType === "json" ? (
+                          <span className="text-muted-foreground">[JSON]</span>
+                        ) : (
+                          <span className="truncate">{log.valueString || "-"}</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            log.severity === "risk_hint" ? "destructive" :
+                            log.severity === "warning" ? "secondary" : "outline"
+                          }
+                          className="text-xs"
+                        >
+                          {log.severity}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            {latestScan.signalLogs.length > 50 && (
+              <p className="text-xs text-muted-foreground mt-2">
+                Showing 50 of {latestScan.signalLogs.length} signals
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -422,6 +486,35 @@ export default async function ScanDetailPage({
                   </div>
                   <span className="text-xs text-muted-foreground">
                     {scan.dataPoints.length} data points
+                  </span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* URL Input History */}
+      {domain.urlInputs.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <History className="h-5 w-5" />
+              URL Input History
+            </CardTitle>
+            <CardDescription>
+              Different URL formats that resolved to this domain
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {domain.urlInputs.map((input) => (
+                <div key={input.id} className="flex items-center justify-between text-sm">
+                  <code className="bg-muted px-2 py-1 rounded text-xs">
+                    {input.rawInput}
+                  </code>
+                  <span className="text-muted-foreground text-xs">
+                    {formatDistanceToNow(new Date(input.createdAt), { addSuffix: true })}
                   </span>
                 </div>
               ))}
@@ -632,7 +725,8 @@ function ContactDetailsCard({
           </div>
         )}
 
-        {data.notes && (
+        {/* Only show notes if they're short and actionable, not verbose explanations */}
+        {data.notes && data.notes.length < 150 && !data.notes.toLowerCase().includes('no contact') && !data.notes.toLowerCase().includes('not found') && !data.notes.toLowerCase().includes('appears to be') && (
           <div>
             <p className="text-sm font-medium text-muted-foreground mb-2">Notes</p>
             <p className="text-sm">{data.notes}</p>
@@ -643,8 +737,7 @@ function ContactDetailsCard({
           !hasPhones &&
           !hasAddresses &&
           !hasContactForms &&
-          !hasSocial &&
-          !data.notes && (
+          !hasSocial && (
             <p className="text-muted-foreground text-center py-4">
               No contact details found
             </p>
@@ -861,6 +954,23 @@ function AiGeneratedLikelihoodCard({
           </div>
         )}
 
+        {/* Suspicious Content Patterns */}
+        {data.signals.suspicious_content_patterns && data.signals.suspicious_content_patterns.length > 0 && (
+          <div>
+            <p className="text-sm font-medium text-muted-foreground mb-2">
+              Suspicious Content Detected
+            </p>
+            <ul className="space-y-1">
+              {data.signals.suspicious_content_patterns.map((pattern, idx) => (
+                <li key={idx} className="text-sm flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  {pattern}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* Infrastructure Signals */}
         {data.signals.infrastructure && (
           <div>
@@ -929,8 +1039,8 @@ function AiGeneratedLikelihoodCard({
           </div>
         )}
 
-        {/* Notes */}
-        {data.notes && (
+        {/* Notes - only show if short and actionable */}
+        {data.notes && data.notes.length < 200 && !data.notes.toLowerCase().includes('appears to be') && !data.notes.toLowerCase().includes('no contact') && (
           <div className="bg-muted/30 rounded-lg p-3">
             <p className="text-sm text-muted-foreground flex items-start gap-2">
               <Info className="h-4 w-4 flex-shrink-0 mt-0.5" />
@@ -946,6 +1056,384 @@ function AiGeneratedLikelihoodCard({
             This is a heuristic estimate, not a definitive judgment. Use as one signal among many in your risk assessment. Many legitimate websites use templates, AI assistance, or no-code builders.
           </span>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================================================
+// Risk Assessment Card
+// =============================================================================
+
+function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
+  const getRiskColor = (score: number) => {
+    if (score <= 30) return "text-green-600";
+    if (score <= 50) return "text-yellow-600";
+    if (score <= 70) return "text-orange-500";
+    return "text-red-600";
+  };
+
+  const getProgressColor = (score: number) => {
+    if (score <= 30) return "bg-green-500";
+    if (score <= 50) return "bg-yellow-500";
+    if (score <= 70) return "bg-orange-500";
+    return "bg-red-500";
+  };
+
+  const getRiskLabel = (score: number) => {
+    if (score <= 20) return "Very Low";
+    if (score <= 40) return "Low";
+    if (score <= 60) return "Moderate";
+    if (score <= 80) return "High";
+    return "Very High";
+  };
+
+  const riskTypeLabels: Record<string, string> = {
+    phishing: "Phishing",
+    fraud: "Fraud",
+    compliance: "Compliance",
+    credit: "Credit",
+  };
+
+  const riskTypeIcons: Record<string, React.ReactNode> = {
+    phishing: <AlertTriangle className="h-4 w-4" />,
+    fraud: <AlertCircle className="h-4 w-4" />,
+    compliance: <Info className="h-4 w-4" />,
+    credit: <Activity className="h-4 w-4" />,
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <AlertTriangle className="h-5 w-5" />
+          Risk Assessment
+        </CardTitle>
+        <CardDescription>
+          Multi-factor risk analysis based on domain intelligence signals
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* Main Score Display */}
+        <div className="flex items-center gap-6">
+          <div className="text-center">
+            <div className={`text-5xl font-bold ${getRiskColor(data.overall_risk_score)}`}>
+              {data.overall_risk_score}
+            </div>
+            <div className="text-sm text-muted-foreground mt-1">
+              {getRiskLabel(data.overall_risk_score)} Risk
+            </div>
+          </div>
+          <div className="flex-1">
+            <div className="h-4 bg-muted rounded-full overflow-hidden">
+              <div
+                className={`h-full ${getProgressColor(data.overall_risk_score)} transition-all duration-300`}
+                style={{ width: `${data.overall_risk_score}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-xs text-muted-foreground mt-1">
+              <span>0 - Low Risk</span>
+              <span>100 - High Risk</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Primary Risk Type & Confidence */}
+        <div className="flex items-center gap-4 flex-wrap">
+          <Badge variant="secondary" className="text-sm">
+            Primary: {riskTypeLabels[data.primary_risk_type]}
+          </Badge>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">Confidence:</span>
+            <span className={`text-sm font-bold ${data.confidence < 50 ? "text-orange-500" : data.confidence < 70 ? "text-yellow-600" : "text-green-600"}`}>
+              {data.confidence}%
+            </span>
+          </div>
+          {data.confidence < 50 && (
+            <Badge variant="outline" className="text-orange-500 border-orange-300">
+              <AlertTriangle className="h-3 w-3 mr-1" />
+              Low confidence
+            </Badge>
+          )}
+        </div>
+
+        {/* Risk Type Scores */}
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-muted-foreground">Risk Type Breakdown</p>
+          {Object.entries(data.risk_type_scores).map(([type, score]) => (
+            <div key={type} className="flex items-center gap-3">
+              <div className="flex items-center gap-2 w-28">
+                {riskTypeIcons[type]}
+                <span className="text-sm font-medium capitalize">{riskTypeLabels[type]}</span>
+              </div>
+              <div className="flex-1 h-3 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={`h-full ${getProgressColor(score)} transition-all duration-300`}
+                  style={{ width: `${score}%` }}
+                />
+              </div>
+              <span className={`text-sm font-bold w-8 text-right ${getRiskColor(score)}`}>
+                {score}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Top Reasons */}
+        {data.reasons.length > 0 && (
+          <div>
+            <p className="text-sm font-medium text-muted-foreground mb-2">Top Risk Factors</p>
+            <ul className="space-y-1">
+              {data.reasons.map((reason, idx) => (
+                <li key={idx} className="text-sm flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-orange-500 flex-shrink-0 mt-0.5" />
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Evidence */}
+        {data.evidence.urls_checked.length > 0 && (
+          <Accordion>
+            <AccordionItem title={`Evidence (${data.evidence.urls_checked.length} URLs checked)`}>
+              <div className="space-y-4">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-2">URLs Checked</p>
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {data.evidence.urls_checked.map((url, idx) => (
+                      <a
+                        key={idx}
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block text-xs text-blue-600 hover:underline truncate"
+                      >
+                        {url}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+                {data.evidence.signal_paths.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-2">Signal Paths</p>
+                    <div className="flex flex-wrap gap-1">
+                      {data.evidence.signal_paths.map((path, idx) => (
+                        <Badge key={idx} variant="outline" className="text-xs font-mono">
+                          {path}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </AccordionItem>
+          </Accordion>
+        )}
+
+        {/* Notes - only show if short and actionable */}
+        {data.notes && data.notes.length < 200 && !data.notes.toLowerCase().includes('appears to be') && !data.notes.toLowerCase().includes('no contact') && (
+          <div className="bg-muted/30 rounded-lg p-3">
+            <p className="text-sm text-muted-foreground flex items-start gap-2">
+              <Info className="h-4 w-4 flex-shrink-0 mt-0.5" />
+              {data.notes}
+            </p>
+          </div>
+        )}
+
+        {/* Disclaimer */}
+        <div className="text-xs text-muted-foreground border-t pt-4 flex items-start gap-2">
+          <Info className="h-3 w-3 flex-shrink-0 mt-0.5" />
+          <span>
+            This assessment is heuristic-based, using only internal domain signals (no external APIs). Use as one factor in your overall risk evaluation.
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================================================
+// Domain Intel Signals Card
+// =============================================================================
+
+function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Globe className="h-5 w-5" />
+          Domain Intelligence Signals
+        </CardTitle>
+        <CardDescription>
+          Raw signals collected from {data.target_domain}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Accordion>
+          <AccordionItem title="Reachability & Response">
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <span className="text-muted-foreground">Status:</span>{" "}
+                <span className={data.reachability.is_active ? "text-green-600" : "text-red-600"}>
+                  {data.reachability.status_code || "N/A"} ({data.reachability.is_active ? "Active" : "Inactive"})
+                </span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Latency:</span>{" "}
+                {data.reachability.latency_ms}ms
+              </div>
+              <div>
+                <span className="text-muted-foreground">Title:</span>{" "}
+                {data.reachability.html_title || "N/A"}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Word count:</span>{" "}
+                {data.reachability.homepage_text_word_count || 0}
+              </div>
+            </div>
+          </AccordionItem>
+
+          <AccordionItem title="Redirects">
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Chain length:</span>
+                <span>{data.redirects.redirect_chain_length}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Cross-domain:</span>
+                {data.redirects.cross_domain_redirect ? (
+                  <Badge variant="destructive" className="text-xs">Yes</Badge>
+                ) : (
+                  <Badge variant="outline" className="text-xs">No</Badge>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">JS redirect:</span>
+                {data.redirects.js_redirect_hint ? (
+                  <Badge variant="secondary" className="text-xs">Detected</Badge>
+                ) : (
+                  <Badge variant="outline" className="text-xs">None</Badge>
+                )}
+              </div>
+            </div>
+          </AccordionItem>
+
+          <AccordionItem title="DNS">
+            <div className="space-y-2 text-sm">
+              <div>
+                <span className="text-muted-foreground">A records:</span>{" "}
+                {data.dns.a_records.length > 0 ? data.dns.a_records.join(", ") : "None"}
+              </div>
+              <div>
+                <span className="text-muted-foreground">NS records:</span>{" "}
+                {data.dns.ns_records.length > 0 ? data.dns.ns_records.join(", ") : "None"}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">MX present:</span>
+                {data.dns.mx_present ? (
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                ) : (
+                  <XCircle className="h-4 w-4 text-red-600" />
+                )}
+              </div>
+            </div>
+          </AccordionItem>
+
+          <AccordionItem title="TLS / HTTPS">
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">HTTPS OK:</span>
+                {data.tls.https_ok ? (
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                ) : (
+                  <XCircle className="h-4 w-4 text-red-600" />
+                )}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Issuer:</span>{" "}
+                {data.tls.cert_issuer || "N/A"}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Days to expiry:</span>{" "}
+                <span className={data.tls.expiring_soon ? "text-orange-500" : ""}>
+                  {data.tls.days_to_expiry ?? "N/A"}
+                </span>
+              </div>
+            </div>
+          </AccordionItem>
+
+          <AccordionItem title="Security Headers">
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {[
+                ["HSTS", data.headers.hsts_present],
+                ["CSP", data.headers.csp_present],
+                ["X-Frame-Options", data.headers.xfo_present],
+                ["X-Content-Type-Options", data.headers.xcto_present],
+                ["Referrer-Policy", data.headers.referrer_policy_present],
+              ].map(([name, present]) => (
+                <div key={String(name)} className="flex items-center gap-2">
+                  {present ? (
+                    <CheckCircle className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <XCircle className="h-4 w-4 text-red-600" />
+                  )}
+                  <span>{String(name)}</span>
+                </div>
+              ))}
+            </div>
+          </AccordionItem>
+
+          <AccordionItem title="Forms & Inputs">
+            <div className="space-y-2 text-sm">
+              <div>
+                <span className="text-muted-foreground">Password inputs:</span>{" "}
+                {data.forms.password_input_count}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Email inputs:</span>{" "}
+                {data.forms.email_input_count}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground">Login form:</span>
+                {data.forms.login_form_present ? (
+                  <Badge variant="secondary" className="text-xs">Detected</Badge>
+                ) : (
+                  <Badge variant="outline" className="text-xs">None</Badge>
+                )}
+              </div>
+              {data.forms.external_form_actions.length > 0 && (
+                <div>
+                  <span className="text-muted-foreground">External actions:</span>{" "}
+                  <span className="text-orange-500">{data.forms.external_form_actions.join(", ")}</span>
+                </div>
+              )}
+            </div>
+          </AccordionItem>
+
+          <AccordionItem title="Policy Pages">
+            <div className="space-y-1 text-sm">
+              {Object.entries(data.policy_pages.page_exists).map(([path, info]) => (
+                <div key={path} className="flex items-center gap-2">
+                  {info.exists ? (
+                    <CheckCircle className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <XCircle className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  <span className="font-mono">{path}</span>
+                  {info.status && <span className="text-muted-foreground">({info.status})</span>}
+                </div>
+              ))}
+            </div>
+          </AccordionItem>
+
+          <AccordionItem title="Raw JSON">
+            <pre className="text-xs bg-muted p-4 rounded overflow-auto max-h-96">
+              {JSON.stringify(data, null, 2)}
+            </pre>
+          </AccordionItem>
+        </Accordion>
       </CardContent>
     </Card>
   );
