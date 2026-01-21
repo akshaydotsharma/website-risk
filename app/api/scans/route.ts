@@ -7,7 +7,7 @@ import {
   generateDomainHash,
   checkWebsiteActive,
 } from "@/lib/utils";
-import { extractDataPoint, extractDataPointFromContent } from "@/lib/extractors";
+import { extractDataPoint, extractDataPointFromContent, extractAiGeneratedLikelihood } from "@/lib/extractors";
 import { isDomainAuthorized, runDiscoveryPipeline } from "@/lib/discovery";
 
 const createScanSchema = z.object({
@@ -86,7 +86,15 @@ export async function POST(request: Request) {
     // Check if domain is authorized for discovery crawling
     const authResult = await isDomainAuthorized(normalizedDomain);
 
-    let extractedResult = null;
+    const extractedResults: Array<{
+      key: string;
+      label: string;
+      value: any;
+      sources: string[];
+      rawOpenAIResponse: any;
+    }> = [];
+
+    let crawledPages: Map<string, string> | undefined;
 
     if (authResult.authorized && authResult.config) {
       // Run full discovery pipeline for authorized domains
@@ -97,6 +105,8 @@ export async function POST(request: Request) {
           normalizedDomain,
           authResult.config
         );
+
+        crawledPages = discoveryResult.crawledPages;
 
         // Update active status based on crawl results if initial check failed
         if (!isActive && discoveryResult.crawledPages.size > 0) {
@@ -128,22 +138,28 @@ export async function POST(request: Request) {
           }
         }
 
-        // Extract data points from crawled content
+        // Extract contact details from crawled content
         if (discoveryResult.crawledPages.size > 0) {
           const sources = Array.from(discoveryResult.crawledPages.keys());
-          extractedResult = await extractDataPointFromContent(
-            url,
-            normalizedDomain,
-            "contact_details",
-            discoveryResult.crawledPages,
-            sources
-          );
+          try {
+            const contactResult = await extractDataPointFromContent(
+              url,
+              normalizedDomain,
+              "contact_details",
+              discoveryResult.crawledPages,
+              sources
+            );
+            extractedResults.push(contactResult);
+          } catch (contactError) {
+            console.error("Error extracting contact details:", contactError);
+          }
         }
       } catch (discoveryError) {
         console.error("Error during discovery pipeline:", discoveryError);
         // Fall back to basic extraction if discovery fails
         try {
-          extractedResult = await extractDataPoint(url, normalizedDomain, "contact_details");
+          const contactResult = await extractDataPoint(url, normalizedDomain, "contact_details");
+          extractedResults.push(contactResult);
         } catch (fallbackError) {
           console.error("Fallback extraction also failed:", fallbackError);
         }
@@ -151,14 +167,28 @@ export async function POST(request: Request) {
     } else {
       // Domain not authorized - use basic extraction (no discovery)
       try {
-        extractedResult = await extractDataPoint(url, normalizedDomain, "contact_details");
+        const contactResult = await extractDataPoint(url, normalizedDomain, "contact_details");
+        extractedResults.push(contactResult);
       } catch (extractionError) {
         console.error("Error during data extraction:", extractionError);
       }
     }
 
+    // Extract AI-generated likelihood (always runs, uses homepage only)
+    try {
+      const aiResult = await extractAiGeneratedLikelihood(
+        scan.id,
+        url,
+        normalizedDomain,
+        crawledPages
+      );
+      extractedResults.push(aiResult);
+    } catch (aiError) {
+      console.error("Error extracting AI-generated likelihood:", aiError);
+    }
+
     // Save extracted data points (both to scan and domain)
-    if (extractedResult) {
+    for (const extractedResult of extractedResults) {
       await prisma.$transaction([
         // Save to ScanDataPoint (historical record for this specific scan)
         prisma.scanDataPoint.create({

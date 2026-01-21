@@ -5,6 +5,7 @@ import {
   shouldUseBrowser,
   hasHiddenContactContent,
   closeBrowser,
+  findContactLinksWithBrowser,
 } from "./browser";
 import { extractDomainFromInput } from "./utils";
 
@@ -474,6 +475,52 @@ export async function runDiscoveryPipeline(
 
   // Final deduplication of discovered URLs
   result.discoveredUrls = [...new Set(result.discoveredUrls)];
+
+  // Step 4: Check if we have a contact page in our crawled pages
+  // If not, use browser-based discovery (handles SPAs with JS routing)
+  const hasContactPage = Array.from(result.crawledPages.keys()).some(pageUrl =>
+    /contact|get-in-touch|reach-us|support.*contact/i.test(pageUrl)
+  );
+
+  if (!hasContactPage) {
+    console.log("No contact page found via standard crawling, trying browser-based discovery...");
+    try {
+      const contactLinks = await findContactLinksWithBrowser(url);
+
+      for (const linkResult of contactLinks) {
+        // Only include same-domain URLs
+        try {
+          const linkUrl = new URL(linkResult.url);
+          const baseUrlObj = new URL(url);
+          if (linkUrl.hostname !== baseUrlObj.hostname) continue;
+        } catch {
+          continue;
+        }
+
+        // Skip if already crawled
+        if (result.crawledPages.has(linkResult.url)) continue;
+
+        console.log(`Found contact page via browser: ${linkResult.url}`);
+
+        // Fetch the contact page with browser (for SPAs, need browser to render)
+        const contactResult = await fetchWithBrowser(scanId, linkResult.url, "contact_page", {
+          waitForNetworkIdle: false,
+          additionalWaitMs: 5000,
+          expandSections: true,
+          scrollToBottom: true,
+        });
+
+        if (contactResult.content) {
+          result.crawledPages.set(linkResult.url, contactResult.content);
+          result.discoveredUrls.push(linkResult.url);
+          console.log(`Successfully fetched contact page: ${linkResult.url}`);
+          break; // Only need one contact page
+        }
+      }
+    } catch (error) {
+      console.error("Error during browser-based contact discovery:", error);
+    }
+  }
 
   return result;
 }

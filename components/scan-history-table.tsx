@@ -22,7 +22,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatDistanceToNow } from "date-fns";
-import { History, Eye, RefreshCw, Trash2, Loader2 } from "lucide-react";
+import { History, Eye, RefreshCw, Trash2, Loader2, Bot } from "lucide-react";
 
 interface DataPoint {
   id: string;
@@ -73,6 +73,38 @@ function hasContactDetails(dataPoints: DataPoint[]): boolean {
   } catch {
     return false;
   }
+}
+
+// Helper to get AI-generated likelihood score
+function getAiScore(dataPoints: DataPoint[]): { score: number | null; confidence: number | null } {
+  const aiDataPoint = dataPoints.find((dp) => dp.key === "ai_generated_likelihood");
+  if (!aiDataPoint) return { score: null, confidence: null };
+
+  try {
+    const value = JSON.parse(aiDataPoint.value);
+    return {
+      score: value.ai_generated_score ?? null,
+      confidence: value.confidence ?? null,
+    };
+  } catch {
+    return { score: null, confidence: null };
+  }
+}
+
+// Get score color class
+function getScoreColorClass(score: number): string {
+  if (score <= 30) return "text-green-600";
+  if (score <= 50) return "text-yellow-600";
+  if (score <= 70) return "text-orange-500";
+  return "text-red-600";
+}
+
+// Get score background color class
+function getScoreBgClass(score: number): string {
+  if (score <= 30) return "bg-green-500";
+  if (score <= 50) return "bg-yellow-500";
+  if (score <= 70) return "bg-orange-500";
+  return "bg-red-500";
 }
 
 export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableProps) {
@@ -227,6 +259,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
             <TableRow>
               <TableHead>Website URL</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>AI Score</TableHead>
               <TableHead>Last Scanned</TableHead>
               <TableHead>Created</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -234,7 +267,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
           </TableHeader>
           <TableBody>
             <TableRow>
-              <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+              <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                 Loading...
               </TableCell>
             </TableRow>
@@ -265,6 +298,12 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
             >
               Status
             </SortableTableHead>
+            <TableHead className="w-[100px]">
+              <div className="flex items-center gap-1">
+                <Bot className="h-3 w-3" />
+                AI Score
+              </div>
+            </TableHead>
             <SortableTableHead
               sortKey="lastCheckedAt"
               currentSortKey={sortField}
@@ -351,6 +390,41 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
                       ? `Active (${domain.statusCode})`
                       : "Inactive"}
                   </Badge>
+                </TableCell>
+                <TableCell>
+                  {(() => {
+                    const { score, confidence } = getAiScore(domain.dataPoints);
+                    if (score === null) {
+                      return <span className="text-muted-foreground text-xs">-</span>;
+                    }
+                    return (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="flex items-center gap-2" data-interactive>
+                              <span className={`font-bold text-sm ${getScoreColorClass(score)}`}>
+                                {score}
+                              </span>
+                              <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full ${getScoreBgClass(score)}`}
+                                  style={{ width: `${score}%` }}
+                                />
+                              </div>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <div className="text-xs">
+                              <p>AI-generated likelihood: {score}/100</p>
+                              <p className="text-muted-foreground">
+                                Confidence: {confidence}%
+                              </p>
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell className="text-muted-foreground text-sm">
                   {domain.lastCheckedAt

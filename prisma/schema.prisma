@@ -58,6 +58,7 @@ model WebsiteScan {
   domain         Domain          @relation(fields: [domainId], references: [id], onDelete: Cascade)
   dataPoints     ScanDataPoint[]
   crawlFetchLogs CrawlFetchLog[]
+  artifacts      ScanArtifact[]
 
   @@index([domainId])
   @@index([url])
@@ -144,4 +145,22 @@ model UserPreference {
 
   @@unique([userId, key])
   @@index([userId])
+}
+
+// ScanArtifact stores homepage snippets for reproducibility without bloating logs
+model ScanArtifact {
+  id          String   @id @default(cuid())
+  scanId      String
+  url         String   // The URL that was fetched
+  type        String   // "homepage_html" | "homepage_text"
+  sha256      String   // Hash of full content for integrity verification
+  snippet     String   // Truncated content (max ~20KB for HTML, ~8KB for text)
+  contentType String?  // MIME type from response headers
+  fetchedAt   DateTime @default(now())
+
+  scan        WebsiteScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@unique([scanId, type])
+  @@index([scanId])
+  @@index([sha256])
 }

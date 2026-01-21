@@ -12,10 +12,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { format, formatDistanceToNow } from "date-fns";
-import { ExternalLink, Mail, Phone, MapPin, Link2, Globe, Activity, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, History } from "lucide-react";
+import { ExternalLink, Mail, Phone, MapPin, Link2, Globe, Activity, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, History, Bot, AlertTriangle, Info, ChevronDown, ChevronUp } from "lucide-react";
 import Link from "next/link";
 import { RescanButton } from "./rescan-button";
-import type { ContactDetails } from "@/lib/extractors";
+import { AiScanButton } from "./ai-scan-button";
+import type { ContactDetails, AiGeneratedLikelihood } from "@/lib/extractors";
 
 export const dynamic = "force-dynamic";
 
@@ -114,7 +115,13 @@ export default async function ScanDetailPage({
               <ExternalLink className="h-4 w-4" />
             </a>
           </div>
-          <RescanButton scanId={domain.id} />
+          <div className="flex items-center gap-2">
+            <AiScanButton
+              domainId={domain.id}
+              hasExistingAiScore={domain.dataPoints.some(dp => dp.key === "ai_generated_likelihood")}
+            />
+            <RescanButton scanId={domain.id} />
+          </div>
         </div>
       </div>
 
@@ -202,6 +209,17 @@ export default async function ScanDetailPage({
                     key={dataPoint.id}
                     data={value as ContactDetails}
                     sources={sources}
+                  />
+                );
+              }
+
+              if (dataPoint.key === "ai_generated_likelihood") {
+                const rawResponse = JSON.parse(dataPoint.rawOpenAIResponse || "{}");
+                return (
+                  <AiGeneratedLikelihoodCard
+                    key={dataPoint.id}
+                    data={value as AiGeneratedLikelihood}
+                    rawOpenAIResponse={rawResponse}
                   />
                 );
               }
@@ -631,6 +649,303 @@ function ContactDetailsCard({
               No contact details found
             </p>
           )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface OpenAIResponseStatus {
+  error?: string;
+  fallback?: boolean;
+  model?: string;
+  analysis?: string;
+}
+
+function AiGeneratedLikelihoodCard({
+  data,
+  rawOpenAIResponse,
+}: {
+  data: AiGeneratedLikelihood;
+  rawOpenAIResponse?: OpenAIResponseStatus;
+}) {
+  const score = data.ai_generated_score;
+  const confidence = data.confidence;
+
+  // Determine if OpenAI analysis failed
+  const openAiFailed = rawOpenAIResponse?.fallback === true || !!rawOpenAIResponse?.error;
+  const openAiError = rawOpenAIResponse?.error;
+
+  // Determine color based on score
+  const getScoreColor = (score: number) => {
+    if (score <= 30) return "text-green-600";
+    if (score <= 50) return "text-yellow-600";
+    if (score <= 70) return "text-orange-500";
+    return "text-red-600";
+  };
+
+  const getProgressColor = (score: number) => {
+    if (score <= 30) return "bg-green-500";
+    if (score <= 50) return "bg-yellow-500";
+    if (score <= 70) return "bg-orange-500";
+    return "bg-red-500";
+  };
+
+  const getScoreLabel = (score: number) => {
+    if (score <= 20) return "Very Unlikely";
+    if (score <= 40) return "Unlikely";
+    if (score <= 60) return "Uncertain";
+    if (score <= 80) return "Likely";
+    return "Very Likely";
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Bot className="h-5 w-5" />
+          AI-generated likelihood
+        </CardTitle>
+        <CardDescription>
+          Heuristic estimate based on content, markup, and infrastructure signals
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* Main Score Display */}
+        <div className="flex items-center gap-6">
+          <div className="text-center">
+            <div className={`text-5xl font-bold ${getScoreColor(score)}`}>
+              {score}
+            </div>
+            <div className="text-sm text-muted-foreground mt-1">
+              {getScoreLabel(score)}
+            </div>
+          </div>
+          <div className="flex-1">
+            <div className="h-4 bg-muted rounded-full overflow-hidden">
+              <div
+                className={`h-full ${getProgressColor(score)} transition-all duration-300`}
+                style={{ width: `${score}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-xs text-muted-foreground mt-1">
+              <span>0 - Not AI</span>
+              <span>100 - Very AI-like</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Confidence Display */}
+        <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">Confidence:</span>
+            <span className={`text-sm font-bold ${confidence < 30 ? "text-orange-500" : confidence < 60 ? "text-yellow-600" : "text-green-600"}`}>
+              {confidence}%
+            </span>
+          </div>
+          {confidence < 30 && (
+            <Badge variant="outline" className="text-orange-500 border-orange-300">
+              <AlertTriangle className="h-3 w-3 mr-1" />
+              Low confidence
+            </Badge>
+          )}
+        </div>
+
+        {/* OpenAI Analysis Status */}
+        {openAiFailed ? (
+          <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <XCircle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-700 dark:text-red-400">
+                  OpenAI Content Analysis Failed
+                </p>
+                <p className="text-xs text-red-600 dark:text-red-500 mt-1">
+                  Score based on markup signals only (less accurate).
+                  {openAiError && (
+                    <span className="block mt-1 font-mono text-xs opacity-75">
+                      Error: {openAiError}
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-500">
+            <CheckCircle className="h-4 w-4" />
+            <span>OpenAI content analysis completed</span>
+          </div>
+        )}
+
+        {/* Subscores */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className="bg-muted/50 rounded-lg p-3">
+            <div className="text-xs text-muted-foreground mb-1">Content Score</div>
+            <div className="flex items-center gap-2">
+              <div className={`text-2xl font-bold ${getScoreColor(data.subscores.content)}`}>
+                {data.subscores.content}
+              </div>
+              <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={`h-full ${getProgressColor(data.subscores.content)}`}
+                  style={{ width: `${data.subscores.content}%` }}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="bg-muted/50 rounded-lg p-3">
+            <div className="text-xs text-muted-foreground mb-1">Markup Score</div>
+            <div className="flex items-center gap-2">
+              <div className={`text-2xl font-bold ${getScoreColor(data.subscores.markup)}`}>
+                {data.subscores.markup}
+              </div>
+              <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={`h-full ${getProgressColor(data.subscores.markup)}`}
+                  style={{ width: `${data.subscores.markup}%` }}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="bg-muted/50 rounded-lg p-3">
+            <div className="text-xs text-muted-foreground mb-1">Infrastructure Score</div>
+            <div className="flex items-center gap-2">
+              <div className={`text-2xl font-bold ${getScoreColor(data.subscores.infrastructure ?? 0)}`}>
+                {data.subscores.infrastructure ?? "-"}
+              </div>
+              <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={`h-full ${getProgressColor(data.subscores.infrastructure ?? 0)}`}
+                  style={{ width: `${data.subscores.infrastructure ?? 0}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Detected Signals */}
+        {(data.signals.generator_meta || data.signals.tech_hints.length > 0) && (
+          <div>
+            <p className="text-sm font-medium text-muted-foreground mb-2">
+              Detected Technology
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {data.signals.generator_meta && (
+                <Badge variant="secondary" className="text-xs">
+                  {data.signals.generator_meta}
+                </Badge>
+              )}
+              {data.signals.tech_hints.map((hint, idx) => (
+                <Badge key={idx} variant="outline" className="text-xs">
+                  {hint}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* AI Markers */}
+        {data.signals.ai_markers.length > 0 && (
+          <div>
+            <p className="text-sm font-medium text-muted-foreground mb-2">
+              AI Markers Found
+            </p>
+            <ul className="space-y-1">
+              {data.signals.ai_markers.map((marker, idx) => (
+                <li key={idx} className="text-sm flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-orange-500 flex-shrink-0 mt-0.5" />
+                  {marker}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Infrastructure Signals */}
+        {data.signals.infrastructure && (
+          <div>
+            <p className="text-sm font-medium text-muted-foreground mb-2">
+              Infrastructure Signals
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_robots_txt ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400" : "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400"}`}>
+                {data.signals.infrastructure.has_robots_txt ? (
+                  <CheckCircle className="h-4 w-4" />
+                ) : (
+                  <XCircle className="h-4 w-4" />
+                )}
+                robots.txt
+              </div>
+              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_sitemap ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400" : "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400"}`}>
+                {data.signals.infrastructure.has_sitemap ? (
+                  <CheckCircle className="h-4 w-4" />
+                ) : (
+                  <XCircle className="h-4 w-4" />
+                )}
+                sitemap.xml
+              </div>
+              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_favicon ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400" : "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400"}`}>
+                {data.signals.infrastructure.has_favicon ? (
+                  <CheckCircle className="h-4 w-4" />
+                ) : (
+                  <XCircle className="h-4 w-4" />
+                )}
+                Favicon
+              </div>
+              {data.signals.infrastructure.free_hosting && (
+                <div className="flex items-center gap-2 text-sm p-2 rounded-md bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400">
+                  <AlertTriangle className="h-4 w-4" />
+                  {data.signals.infrastructure.free_hosting}
+                </div>
+              )}
+              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.seo_score >= 50 ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400" : "bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400"}`}>
+                <Globe className="h-4 w-4" />
+                SEO: {data.signals.infrastructure.seo_score}/100
+              </div>
+              {data.signals.infrastructure.is_boilerplate && (
+                <div className="flex items-center gap-2 text-sm p-2 rounded-md bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400">
+                  <AlertCircle className="h-4 w-4" />
+                  Boilerplate
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Reasons */}
+        {data.reasons.length > 0 && (
+          <div>
+            <p className="text-sm font-medium text-muted-foreground mb-2">
+              Analysis Reasons
+            </p>
+            <ul className="space-y-1">
+              {data.reasons.map((reason, idx) => (
+                <li key={idx} className="text-sm flex items-start gap-2">
+                  <span className="text-muted-foreground">•</span>
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Notes */}
+        {data.notes && (
+          <div className="bg-muted/30 rounded-lg p-3">
+            <p className="text-sm text-muted-foreground flex items-start gap-2">
+              <Info className="h-4 w-4 flex-shrink-0 mt-0.5" />
+              {data.notes}
+            </p>
+          </div>
+        )}
+
+        {/* Disclaimer */}
+        <div className="text-xs text-muted-foreground border-t pt-4 flex items-start gap-2">
+          <Info className="h-3 w-3 flex-shrink-0 mt-0.5" />
+          <span>
+            This is a heuristic estimate, not a definitive judgment. Use as one signal among many in your risk assessment. Many legitimate websites use templates, AI assistance, or no-code builders.
+          </span>
+        </div>
       </CardContent>
     </Card>
   );

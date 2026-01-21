@@ -107,48 +107,63 @@ export function extractDomain(url: string): string {
 /**
  * Check if a website is active by fetching it
  * Returns { isActive, statusCode }
+ *
+ * Note: Some servers (especially PHP/Apache) return incorrect status codes
+ * for HEAD requests (e.g., 404) but work fine with GET. We try HEAD first
+ * for efficiency, then fall back to GET if HEAD fails or returns an error status.
  */
 export async function checkWebsiteActive(url: string): Promise<{
   isActive: boolean;
   statusCode: number | null;
 }> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-
-    const response = await fetch(url, {
-      method: "HEAD",
-      signal: controller.signal,
-      redirect: "follow",
-    });
-
-    clearTimeout(timeoutId);
-
-    const statusCode = response.status;
-    const isActive = statusCode >= 200 && statusCode < 400;
-
-    return { isActive, statusCode };
-  } catch (error) {
-    // If HEAD fails, try GET
+  // Helper to perform fetch with timeout
+  const fetchWithTimeout = async (method: "HEAD" | "GET"): Promise<{
+    success: boolean;
+    statusCode: number | null;
+  }> => {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       const response = await fetch(url, {
-        method: "GET",
+        method,
         signal: controller.signal,
         redirect: "follow",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)",
+        },
       });
 
       clearTimeout(timeoutId);
 
       const statusCode = response.status;
-      const isActive = statusCode >= 200 && statusCode < 400;
+      const success = statusCode >= 200 && statusCode < 400;
 
-      return { isActive, statusCode };
-    } catch (err) {
-      // Both HEAD and GET failed
-      return { isActive: false, statusCode: null };
+      return { success, statusCode };
+    } catch {
+      return { success: false, statusCode: null };
     }
+  };
+
+  // Try HEAD first (more efficient)
+  const headResult = await fetchWithTimeout("HEAD");
+
+  if (headResult.success) {
+    return { isActive: true, statusCode: headResult.statusCode };
   }
+
+  // HEAD failed or returned error status - try GET
+  // Some servers don't handle HEAD properly but work fine with GET
+  const getResult = await fetchWithTimeout("GET");
+
+  if (getResult.success) {
+    return { isActive: true, statusCode: getResult.statusCode };
+  }
+
+  // Both failed - return the most informative status code
+  // Prefer GET status if available since it's more reliable
+  return {
+    isActive: false,
+    statusCode: getResult.statusCode ?? headResult.statusCode,
+  };
 }

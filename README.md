@@ -6,7 +6,8 @@ A web application for scanning websites to extract intelligence signals for risk
 
 - **Website Scanning**: Scan any website to check if it's active and extract data points
 - **Generic Architecture**: Extensible design to support multiple data point extractors
-- **Contact Details Extraction**: Currently extracts emails, phone numbers, addresses, social links, and contact forms
+- **Contact Details Extraction**: Extracts emails, phone numbers, addresses, social links, and contact forms
+- **AI-Generated Likelihood Detection**: Heuristic-based estimation of whether homepage content appears AI-generated
 - **Scan History**: View all past scans with status and timestamps
 - **Detailed View**: Deep-dive into each scan with structured data points
 - **Rescan Capability**: Re-scan websites to get fresh data
@@ -195,6 +196,77 @@ website-risk/
 
 - `DATABASE_URL`: SQLite database file path (default: `file:./dev.db`)
 - `OPENAI_API_KEY`: Your OpenAI API key (required)
+
+## AI-Generated Likelihood Signal
+
+The AI-generated likelihood feature provides a heuristic estimate of whether a website's homepage content appears to be AI-generated. **Important: This is an estimate, not a definitive judgment.**
+
+### How It Works
+
+The signal combines two analysis approaches:
+
+1. **Deterministic Markup Analysis** (fast, rule-based)
+   - Detects site builders (Framer, Webflow, Wix, Squarespace, etc.)
+   - Identifies frameworks (Next.js, React, Vue, etc.)
+   - Finds explicit AI markers in HTML comments or content
+   - Checks response headers for tech hints
+
+2. **Model-Based Content Analysis** (OpenAI GPT-4o)
+   - Analyzes visible text for AI-like patterns
+   - Evaluates writing style, specificity, and natural voice
+   - Conservative scoring to avoid false positives
+
+### Score Interpretation
+
+| Score Range | Interpretation |
+|-------------|----------------|
+| 0-30 | Very Unlikely - Content appears naturally written |
+| 31-50 | Unlikely - Mixed signals or insufficient evidence |
+| 51-70 | Uncertain - Some AI-like patterns detected |
+| 71-100 | Likely - Strong AI markers present |
+
+### Confidence Levels
+
+The confidence score (0-100) indicates how reliable the estimate is:
+- **< 30**: Low confidence - treat score with caution
+- **30-60**: Moderate confidence - reasonable estimate
+- **> 60**: High confidence - strong evidence for the score
+
+Confidence decreases when:
+- Homepage has minimal text content
+- Site uses heavy JavaScript rendering
+- Conflicting indicators are present
+
+### Output Schema
+
+```json
+{
+  "ai_generated_score": 45,
+  "confidence": 75,
+  "subscores": {
+    "content": 40,
+    "markup": 55
+  },
+  "signals": {
+    "generator_meta": "Framer",
+    "tech_hints": ["framer", "react", "tailwind"],
+    "ai_markers": []
+  },
+  "reasons": [
+    "Built with Framer (no-code builder)",
+    "Content shows specific industry details",
+    "Natural conversational tone"
+  ],
+  "notes": null
+}
+```
+
+### Important Disclaimers
+
+- This signal is **heuristic**, not determinitive
+- Many legitimate websites use templates, AI assistance, or no-code builders
+- Use this as **one signal among many** in your risk assessment
+- False positives and negatives are possible
 
 ## Future Enhancements
 

@@ -459,3 +459,171 @@ export function hasHiddenContactContent(html: string, url: string): boolean {
 
   return hasExpandables || (hasPhoneLabels && !hasVisiblePhone);
 }
+
+/**
+ * Text patterns that indicate a contact link (exact match)
+ */
+const CONTACT_LINK_TEXT_PATTERNS = [
+  "contact",
+  "contact us",
+  "get in touch",
+  "reach us",
+  "reach out",
+  "support",
+  "help",
+  "customer service",
+  "customer support",
+  "enquiry",
+  "enquiries",
+  "inquiry",
+];
+
+/**
+ * Result from contact link discovery
+ */
+export interface ContactLinkResult {
+  url: string;
+  discoveredByClick: boolean;  // True if found by clicking an element (SPA navigation)
+}
+
+/**
+ * Extract contact page URLs from a rendered page by looking at link text
+ * This handles SPAs and JavaScript-rendered pages where contact links
+ * are only visible after rendering.
+ *
+ * Strategy:
+ * 1. First look for traditional <a href> links with contact text
+ * 2. If none found, look for clickable elements (span, div, button) with contact text
+ *    and click them to discover the navigation URL (for SPAs using JS routing)
+ */
+export async function findContactLinksWithBrowser(
+  baseUrl: string
+): Promise<ContactLinkResult[]> {
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
+
+  try {
+    const browser = await getBrowser();
+
+    context = await browser.newContext({
+      userAgent: DEFAULT_USER_AGENT,
+      viewport: { width: 1920, height: 1080 },
+      ignoreHTTPSErrors: true,
+    });
+
+    page = await context.newPage();
+    page.setDefaultTimeout(DEFAULT_BROWSER_TIMEOUT);
+    page.setDefaultNavigationTimeout(DEFAULT_NAVIGATION_TIMEOUT);
+
+    // Navigate to the homepage - use domcontentloaded as networkidle can hang on SPAs
+    await page.goto(baseUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: DEFAULT_BROWSER_TIMEOUT,
+    });
+
+    // Wait for SPA content to render
+    await page.waitForTimeout(5000);
+
+    // Dismiss any overlays
+    await dismissOverlays(page);
+
+    const results: ContactLinkResult[] = [];
+    const seenUrls = new Set<string>();
+
+    // Strategy 1: Find traditional <a href> links with contact-related text or URL
+    const traditionalLinks = await page.evaluate((patterns: string[]) => {
+      const urls: string[] = [];
+      const links = document.querySelectorAll('a[href]');
+
+      links.forEach((link) => {
+        if (!(link instanceof HTMLAnchorElement)) return;
+
+        const href = link.href;
+        const text = link.textContent?.trim().toLowerCase() || '';
+        const ariaLabel = link.getAttribute('aria-label')?.trim().toLowerCase() || '';
+
+        // Skip empty, javascript, mailto, tel links
+        if (!href) return;
+        if (href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) return;
+
+        // Check if link text matches contact patterns
+        const matchesText = patterns.some(pattern =>
+          text === pattern || ariaLabel === pattern
+        );
+
+        // Also check if URL contains contact-related paths
+        const matchesUrl = /contact|support|help|enquir|get-in-touch|reach-us/i.test(href);
+
+        if (matchesText || matchesUrl) {
+          urls.push(href);
+        }
+      });
+
+      return urls;
+    }, CONTACT_LINK_TEXT_PATTERNS);
+
+    for (const url of traditionalLinks) {
+      if (!seenUrls.has(url)) {
+        seenUrls.add(url);
+        results.push({ url, discoveredByClick: false });
+      }
+    }
+
+    console.log(`Found ${results.length} contact links via traditional <a> tags`);
+
+    // Strategy 2: If no traditional links found, look for clickable elements with contact text
+    // This handles SPAs where navigation is done via JavaScript (Vue Router, React Router, etc.)
+    if (results.length === 0) {
+      console.log('No traditional links found, searching for clickable contact elements...');
+
+      // Try each contact text pattern
+      for (const pattern of ["Contact Us", "Contact", "Support", "Help", "Get in Touch"]) {
+        try {
+          // Find element with exact text match (case insensitive)
+          const element = page.locator(`text="${pattern}"`).first();
+          const isVisible = await element.isVisible({ timeout: 1000 }).catch(() => false);
+
+          if (isVisible) {
+            const currentUrl = page.url();
+
+            // Click the element
+            await element.click({ timeout: 5000 });
+
+            // Wait for navigation/URL change
+            await page.waitForTimeout(2000);
+
+            const newUrl = page.url();
+
+            // If URL changed, we found a contact page
+            if (newUrl !== currentUrl && !seenUrls.has(newUrl)) {
+              console.log(`Found contact URL by clicking "${pattern}": ${newUrl}`);
+              seenUrls.add(newUrl);
+              results.push({ url: newUrl, discoveredByClick: true });
+
+              // Navigate back to homepage for next attempt
+              await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+              await page.waitForTimeout(3000);
+            }
+          }
+        } catch {
+          // Element not found or click failed, continue to next pattern
+        }
+      }
+    }
+
+    console.log(`Total contact URLs found: ${results.length} - ${results.map(r => r.url).join(', ')}`);
+
+    return results;
+
+  } catch (error) {
+    console.error('Error finding contact links with browser:', error);
+    return [] as ContactLinkResult[];
+  } finally {
+    if (page) {
+      await page.close().catch(() => {});
+    }
+    if (context) {
+      await context.close().catch(() => {});
+    }
+  }
+}
