@@ -5,13 +5,15 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Loader2, Shield } from "lucide-react";
 import { cleanUrl } from "@/lib/utils";
 
 export default function HomePageContent() {
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [addToAuthorizedList, setAddToAuthorizedList] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -45,7 +47,7 @@ export default function HomePageContent() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ url: normalizedUrl }),
+        body: JSON.stringify({ url: normalizedUrl, addToAuthorizedList }),
       });
 
       const data = await response.json();
@@ -65,8 +67,8 @@ export default function HomePageContent() {
   return (
     <div className="max-w-2xl mx-auto space-y-8">
       <div className="text-center space-y-4">
-        <h1 className="text-4xl font-bold tracking-tight">Website Risk Intel</h1>
-        <p className="text-lg text-muted-foreground">
+        <h1 className="text-3xl font-bold tracking-tight">Website Risk Intel</h1>
+        <p className="text-muted-foreground">
           Scan websites to extract intelligence signals for risk assessment
         </p>
       </div>
@@ -94,6 +96,24 @@ export default function HomePageContent() {
               </p>
             </div>
 
+            {/* Add to Authorized List Toggle */}
+            <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">Add to authorized list</p>
+                  <p className="text-xs text-muted-foreground">
+                    Enable full crawling with default thresholds
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={addToAuthorizedList}
+                onCheckedChange={setAddToAuthorizedList}
+                disabled={isLoading}
+              />
+            </div>
+
             {error && (
               <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-sm text-destructive">
                 {error}
@@ -107,7 +127,7 @@ export default function HomePageContent() {
                   Scanning...
                 </>
               ) : (
-                "Scan Website"
+                addToAuthorizedList ? "Add to List & Scan Website" : "Scan Website"
               )}
             </Button>
           </form>

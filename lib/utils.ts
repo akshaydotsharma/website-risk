@@ -11,7 +11,7 @@ export function cn(...inputs: ClassValue[]) {
  * This ensures the same domain always gets the same ID regardless of
  * how the user entered the URL (www, https, trailing slash, etc.)
  *
- * @param normalizedDomain - The cleaned/normalized domain (e.g., "envisso.com")
+ * @param normalizedDomain - The cleaned/normalized domain (e.g., "example.com")
  * @returns A SHA-256 hash truncated to 16 characters for use as database ID
  */
 export function generateDomainHash(normalizedDomain: string): string {
@@ -21,12 +21,12 @@ export function generateDomainHash(normalizedDomain: string): string {
 /**
  * Clean and normalize a URL/domain to a canonical form.
  * This ensures different URL formats are treated as the same:
- * - https://envisso.com/
- * - envisso.com
- * - www.envisso.com
- * - envisso.com/
- * - http://www.envisso.com/
- * All become: envisso.com
+ * - https://example.com/
+ * - example.com
+ * - www.example.com
+ * - example.com/
+ * - http://www.example.com/
+ * All become: example.com
  *
  * @param input - URL or domain string to clean
  * @returns Cleaned domain string (lowercase, no protocol, no www, no trailing slash)
@@ -56,7 +56,7 @@ export function cleanUrl(input: string): string {
  * Uses cleanUrl internally for consistent handling.
  *
  * @param input - URL or domain string
- * @returns Clean domain only (e.g., "envisso.com")
+ * @returns Clean domain only (e.g., "example.com")
  */
 export function extractDomainFromInput(input: string): string {
   const cleaned = cleanUrl(input);
@@ -166,4 +166,100 @@ export async function checkWebsiteActive(url: string): Promise<{
     isActive: false,
     statusCode: getResult.statusCode ?? headResult.statusCode,
   };
+}
+
+// =============================================================================
+// Score Color Utilities
+// =============================================================================
+
+/**
+ * Score threshold boundaries for color classification.
+ * Used consistently across all score displays.
+ */
+export const SCORE_THRESHOLDS = {
+  LOW: 30,
+  MEDIUM: 50,
+  HIGH: 70,
+} as const;
+
+/**
+ * Get the text color class for a score value.
+ * Uses semantic color variables defined in globals.css.
+ *
+ * @param score - Number between 0-100
+ * @returns Tailwind text color class
+ */
+export function getScoreTextColor(score: number): string {
+  if (score <= SCORE_THRESHOLDS.LOW) return "text-success";
+  if (score <= SCORE_THRESHOLDS.MEDIUM) return "text-warning";
+  if (score <= SCORE_THRESHOLDS.HIGH) return "text-caution";
+  return "text-destructive";
+}
+
+/**
+ * Get the background color class for a score value.
+ * Uses semantic color variables defined in globals.css.
+ *
+ * @param score - Number between 0-100
+ * @returns Tailwind background color class
+ */
+export function getScoreBgColor(score: number): string {
+  if (score <= SCORE_THRESHOLDS.LOW) return "bg-success";
+  if (score <= SCORE_THRESHOLDS.MEDIUM) return "bg-warning";
+  if (score <= SCORE_THRESHOLDS.HIGH) return "bg-caution";
+  return "bg-destructive";
+}
+
+/**
+ * Get the subtle background color class for a score value (for cards/sections).
+ * Uses opacity variants for subtle backgrounds.
+ *
+ * @param score - Number between 0-100
+ * @returns Tailwind background color class with opacity
+ */
+export function getScoreBgColorSubtle(score: number): string {
+  if (score <= SCORE_THRESHOLDS.LOW) return "bg-success/10";
+  if (score <= SCORE_THRESHOLDS.MEDIUM) return "bg-warning/10";
+  if (score <= SCORE_THRESHOLDS.HIGH) return "bg-caution/10";
+  return "bg-destructive/10";
+}
+
+/**
+ * Get the human-readable label for a risk score.
+ *
+ * @param score - Number between 0-100
+ * @returns Human-readable risk level label
+ */
+export function getRiskLabel(score: number): string {
+  if (score <= 20) return "Very Low";
+  if (score <= 40) return "Low";
+  if (score <= 60) return "Moderate";
+  if (score <= 80) return "High";
+  return "Very High";
+}
+
+/**
+ * Get the human-readable label for an AI-generated likelihood score.
+ *
+ * @param score - Number between 0-100
+ * @returns Human-readable likelihood label
+ */
+export function getAiLikelihoodLabel(score: number): string {
+  if (score <= 20) return "Very Unlikely";
+  if (score <= 40) return "Unlikely";
+  if (score <= 60) return "Uncertain";
+  if (score <= 80) return "Likely";
+  return "Very Likely";
+}
+
+/**
+ * Get the confidence level color class.
+ *
+ * @param confidence - Number between 0-100
+ * @returns Tailwind text color class
+ */
+export function getConfidenceColor(confidence: number): string {
+  if (confidence < 30) return "text-caution";
+  if (confidence < 60) return "text-warning";
+  return "text-success";
 }

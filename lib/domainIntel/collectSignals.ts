@@ -2,6 +2,7 @@ import * as dns from 'dns/promises';
 import * as https from 'https';
 import * as tls from 'tls';
 import { URL } from 'url';
+import { createHash } from 'crypto';
 import {
   DomainPolicy,
   DomainIntelSignals,
@@ -81,6 +82,15 @@ function extractDomain(url: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Normalize domain by removing www. prefix for comparison purposes.
+ * This prevents false positives when sites redirect from non-www to www or vice versa,
+ * which is a standard practice for canonical URL normalization.
+ */
+function normalizeForComparison(domain: string): string {
+  return domain.replace(/^www\./, '');
 }
 
 function isAllowedUrl(url: string, ctx: FetchContext): { allowed: boolean; reason: string | null } {
@@ -375,6 +385,11 @@ function collectRedirectSignals(
   const inputDomain = extractDomain(inputUrl);
   const finalDomain = reachability.final_url ? extractDomain(reachability.final_url) : null;
 
+  // Normalize domains for comparison (strip www. prefix)
+  // This prevents false positives for standard www <-> non-www redirects
+  const normalizedInput = normalizeForComparison(inputDomain);
+  const normalizedFinal = finalDomain ? normalizeForComparison(finalDomain) : null;
+
   // Check for meta refresh
   const metaRefreshPresent = body
     ? /<meta[^>]+http-equiv\s*=\s*["']?refresh/i.test(body)
@@ -384,12 +399,17 @@ function collectRedirectSignals(
   const snippet = body?.substring(0, 50000) || '';
   const jsRedirectHint = JS_REDIRECT_REGEX.test(snippet);
 
+  // Only flag as cross-domain if the normalized domains differ
+  // e.g., example.com -> www.example.com is NOT a cross-domain redirect
+  // but example.com -> otherdomain.com IS a cross-domain redirect
+  const isCrossDomain = normalizedFinal !== null && normalizedFinal !== normalizedInput;
+
   return {
     redirect_chain_length: reachability.redirect_chain.length,
-    cross_domain_redirect: finalDomain !== null && finalDomain !== inputDomain,
+    cross_domain_redirect: isCrossDomain,
     meta_refresh_present: metaRefreshPresent,
     js_redirect_hint: jsRedirectHint,
-    mismatch_input_vs_final_domain: finalDomain !== null && finalDomain !== inputDomain,
+    mismatch_input_vs_final_domain: isCrossDomain,
   };
 }
 
@@ -610,10 +630,17 @@ async function collectPolicyPagesSignals(
     contact_snippet: null,
   };
 
-  for (const path of POLICY_PATHS) {
+  // Fetch all policy pages in parallel for speed
+  const fetchPromises = POLICY_PATHS.map(async (path) => {
     const pageUrl = new URL(path, baseUrl).href;
     const result = await fetchWithLogging(pageUrl, ctx, 'policy_check', { method: 'GET' });
+    return { path, result };
+  });
 
+  const results = await Promise.all(fetchPromises);
+
+  // Process results
+  for (const { path, result } of results) {
     signals.page_exists[path] = {
       exists: result.ok,
       status: result.statusCode,
@@ -925,6 +952,102 @@ function logContentSignals(signals: ContentSignals, ctx: FetchContext): void {
 // Database Persistence
 // =============================================================================
 
+// Constants for artifact storage
+const MAX_HTML_SNIPPET_SIZE = 20 * 1024; // 20KB for HTML snippet
+const MAX_TEXT_SNIPPET_SIZE = 8 * 1024; // 8KB for text snippet
+
+function generateSha256(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * Extract text content from HTML (strip scripts, styles, and tags)
+ */
+function extractTextContentForArtifact(html: string): string {
+  let text = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ');
+  text = text.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ');
+  text = text.replace(/<[^>]+>/g, ' ');
+  text = text.replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  text = text.replace(/\s+/g, ' ').trim();
+  return text;
+}
+
+/**
+ * Store homepage HTML and text as artifacts for use by other extractors
+ */
+async function persistHomepageArtifact(
+  scanId: string,
+  url: string,
+  html: string,
+  contentType: string | null
+): Promise<void> {
+  if (!html || html.length === 0) return;
+
+  const text = extractTextContentForArtifact(html);
+  const htmlSha256 = generateSha256(html);
+  const textSha256 = generateSha256(text);
+
+  // Truncate snippets to max size
+  const htmlSnippet = html.substring(0, MAX_HTML_SNIPPET_SIZE);
+  const textSnippet = text.substring(0, MAX_TEXT_SNIPPET_SIZE);
+
+  await prisma.$transaction([
+    prisma.scanArtifact.upsert({
+      where: {
+        scanId_type: {
+          scanId,
+          type: 'homepage_html',
+        },
+      },
+      create: {
+        scanId,
+        url,
+        type: 'homepage_html',
+        sha256: htmlSha256,
+        snippet: htmlSnippet,
+        contentType: contentType || 'text/html',
+      },
+      update: {
+        url,
+        sha256: htmlSha256,
+        snippet: htmlSnippet,
+        contentType: contentType || 'text/html',
+        fetchedAt: new Date(),
+      },
+    }),
+    prisma.scanArtifact.upsert({
+      where: {
+        scanId_type: {
+          scanId,
+          type: 'homepage_text',
+        },
+      },
+      create: {
+        scanId,
+        url,
+        type: 'homepage_text',
+        sha256: textSha256,
+        snippet: textSnippet,
+        contentType: 'text/plain',
+      },
+      update: {
+        url,
+        sha256: textSha256,
+        snippet: textSnippet,
+        contentType: 'text/plain',
+        fetchedAt: new Date(),
+      },
+    }),
+  ]);
+
+  console.log(`Stored homepage artifacts for scan ${scanId}: HTML=${htmlSnippet.length} chars, text=${textSnippet.length} chars`);
+}
+
 async function persistFetchLogs(scanId: string, logs: FetchLogEntry[]): Promise<void> {
   if (logs.length === 0) return;
 
@@ -1064,6 +1187,14 @@ export async function collectSignals(
 
   // Collect all signals
   const { signals: reachability, body, headers } = await collectReachabilitySignals(normalizedUrl, ctx);
+
+  // Save homepage HTML as artifact for use by other extractors (AI likelihood, SKU extraction, etc.)
+  // This is critical because subsequent fetches may be blocked by bot protection (Cloudflare, etc.)
+  if (body && reachability.is_active) {
+    const finalUrl = reachability.final_url || normalizedUrl;
+    const contentType = reachability.content_type || 'text/html';
+    await persistHomepageArtifact(scanId, finalUrl, body, contentType);
+  }
 
   const redirects = collectRedirectSignals(normalizedUrl, reachability, body);
   logRedirectSignals(redirects, ctx);

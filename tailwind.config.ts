@@ -6,6 +6,24 @@ const config: Config = {
     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./lib/**/*.{js,ts}",
+  ],
+  safelist: [
+    // Ensure semantic color classes are always generated
+    "bg-success",
+    "bg-warning",
+    "bg-caution",
+    "bg-destructive",
+    "text-success",
+    "text-warning",
+    "text-caution",
+    "text-destructive",
+    "text-link",
+    "bg-success/10",
+    "bg-warning/10",
+    "bg-caution/10",
+    "bg-destructive/10",
+    "border-caution/30",
   ],
   theme: {
     extend: {
@@ -43,6 +61,19 @@ const config: Config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          foreground: "hsl(var(--success-foreground))",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          foreground: "hsl(var(--warning-foreground))",
+        },
+        caution: {
+          DEFAULT: "hsl(var(--caution))",
+          foreground: "hsl(var(--caution-foreground))",
+        },
+        link: "hsl(var(--link))",
       },
       borderRadius: {
         lg: "var(--radius)",

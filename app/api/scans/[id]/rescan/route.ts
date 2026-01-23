@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { checkWebsiteActive } from "@/lib/utils";
 import { extractDataPoint, extractDataPointFromContent, extractAiGeneratedLikelihood } from "@/lib/extractors";
-import { isDomainAuthorized, runDiscoveryPipeline } from "@/lib/discovery";
+import { isDomainAuthorized, runDiscoveryPipeline, addAuthorizedDomain } from "@/lib/discovery";
+
+const rescanSchema = z.object({
+  addToAuthorizedList: z.boolean().optional().default(false),
+});
 
 export async function POST(
   request: Request,
@@ -10,6 +15,18 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
+
+    // Parse request body (optional for backwards compatibility)
+    let addToAuthorizedList = false;
+    try {
+      const body = await request.json();
+      const parsed = rescanSchema.safeParse(body);
+      if (parsed.success) {
+        addToAuthorizedList = parsed.data.addToAuthorizedList;
+      }
+    } catch {
+      // Body is empty or invalid, use defaults
+    }
 
     // The ID could be either a domain ID (hash) or a scan ID
     // First try to find as domain ID
@@ -51,6 +68,22 @@ export async function POST(
 
     // Use the most recent scan URL or construct from normalized domain
     const scanUrl = domain.scans[0]?.url || `https://${domain.normalizedUrl}`;
+
+    // Add to authorized list if requested (before starting scan)
+    if (addToAuthorizedList) {
+      try {
+        await addAuthorizedDomain({
+          domain: domain.normalizedUrl,
+          // Use default thresholds
+        });
+        console.log(`Added ${domain.normalizedUrl} to authorized list`);
+      } catch (error: any) {
+        // Ignore if domain already exists (P2002 = unique constraint violation)
+        if (error?.code !== "P2002") {
+          console.error("Error adding domain to authorized list:", error);
+        }
+      }
+    }
 
     // Check if website is still active
     const { isActive, statusCode } = await checkWebsiteActive(scanUrl);

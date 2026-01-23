@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardDivider } from "@/components/ui/card";
+import { getScoreTextColor, getScoreBgColor, getScoreBgColorSubtle, getRiskLabel, getAiLikelihoodLabel, getConfidenceColor } from "@/lib/utils";
 import { Accordion, AccordionItem } from "@/components/ui/accordion";
 import {
   Table,
@@ -11,13 +12,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { format, formatDistanceToNow } from "date-fns";
-import { ExternalLink, Mail, Phone, MapPin, Link2, Globe, Activity, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, History, Bot, AlertTriangle, Info, ChevronDown, ChevronUp } from "lucide-react";
+import { format } from "date-fns";
+import { ExternalLink, Mail, Phone, MapPin, Link2, Globe, Activity, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, History, Bot, AlertTriangle, Info, ChevronDown, ChevronUp, ShoppingCart } from "lucide-react";
 import Link from "next/link";
 import { RescanButton } from "./rescan-button";
 import { AiScanButton } from "./ai-scan-button";
 import { RiskScanButton } from "./risk-scan-button";
 import { HomepageSkusCard } from "./homepage-skus-card";
+import { HomepageSkuCountClient } from "./homepage-sku-count-client";
+import { ScanStatusBadge } from "./scan-status-badge";
+import { PolicyLinksCard } from "./policy-links-card";
 import type { ContactDetails, AiGeneratedLikelihood } from "@/lib/extractors";
 import type { RiskAssessment, DomainIntelSignals } from "@/lib/domainIntel/schemas";
 
@@ -32,13 +36,17 @@ async function getDomainData(id: string) {
       dataPoints: true,
       scans: {
         orderBy: { createdAt: "desc" },
+        take: 10, // Limit to recent scans
         include: {
           dataPoints: true,
+          // Only load logs for display - limited to prevent timeout
           crawlFetchLogs: {
             orderBy: { createdAt: "asc" },
+            take: 100, // Limit logs to prevent slow queries
           },
           signalLogs: {
             orderBy: { createdAt: "asc" },
+            take: 100, // Limit logs to prevent slow queries
           },
         },
       },
@@ -63,13 +71,16 @@ async function getDomainData(id: string) {
           dataPoints: true,
           scans: {
             orderBy: { createdAt: "desc" },
+            take: 10, // Limit to recent scans
             include: {
               dataPoints: true,
               crawlFetchLogs: {
                 orderBy: { createdAt: "asc" },
+                take: 100,
               },
               signalLogs: {
                 orderBy: { createdAt: "asc" },
+                take: 100,
               },
             },
           },
@@ -118,134 +129,161 @@ export default async function ScanDetailPage({
               href={`https://${domain.normalizedUrl}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-lg text-blue-600 hover:underline flex items-center gap-2"
+              className="text-lg text-link hover:underline flex items-center gap-2"
             >
               {domain.normalizedUrl}
               <ExternalLink className="h-4 w-4" />
             </a>
           </div>
           <div className="flex items-center gap-2">
-            <RiskScanButton
-              domainId={domain.id}
-              hasExistingRiskScore={domain.dataPoints.some(dp => dp.key === "domain_risk_assessment")}
-            />
-            <AiScanButton
-              domainId={domain.id}
-              hasExistingAiScore={domain.dataPoints.some(dp => dp.key === "ai_generated_likelihood")}
-            />
-            <RescanButton scanId={domain.id} />
+            <RescanButton scanId={domain.id} normalizedUrl={domain.normalizedUrl} />
           </div>
         </div>
       </div>
 
       {/* Summary Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Summary</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div>
-              <p className="text-sm text-muted-foreground mb-1">Domain</p>
-              <p className="font-medium">{domain.normalizedUrl}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground mb-1">Status</p>
-              <Badge variant={domain.isActive ? "success" : "destructive"}>
-                {domain.isActive ? `Active (${domain.statusCode})` : "Inactive"}
-              </Badge>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground mb-1">Last Scanned</p>
-              <p className="font-medium text-sm">
-                {domain.lastCheckedAt
-                  ? format(new Date(domain.lastCheckedAt), "PPp")
-                  : "Never"}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground mb-1">Total Scans</p>
-              <p className="font-medium text-sm">{domain.scans.length}</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      <SummaryCard domain={domain} latestScan={latestScan} />
 
-      {/* Data Points Section (Domain-level - latest merged data) */}
+      {/* Assessments Section */}
       <div>
-        <h2 className="text-2xl font-bold mb-4">Data Points Extracted</h2>
-        {domain.dataPoints.length === 0 ? (
-          <Card>
-            <CardContent className="py-8 text-center text-muted-foreground">
-              No data points extracted yet
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="space-y-4">
-            {domain.dataPoints.map((dataPoint: any) => {
-              const value = JSON.parse(dataPoint.value);
-              const sources = JSON.parse(dataPoint.sources);
-
-              // Render based on data point type
-              if (dataPoint.key === "contact_details") {
-                return (
-                  <ContactDetailsCard
-                    key={dataPoint.id}
-                    data={value as ContactDetails}
-                    sources={sources}
-                  />
-                );
-              }
-
-              if (dataPoint.key === "ai_generated_likelihood") {
-                const rawResponse = JSON.parse(dataPoint.rawOpenAIResponse || "{}");
-                return (
-                  <AiGeneratedLikelihoodCard
-                    key={dataPoint.id}
-                    data={value as AiGeneratedLikelihood}
-                    rawOpenAIResponse={rawResponse}
-                  />
-                );
-              }
-
-              if (dataPoint.key === "domain_risk_assessment") {
-                return (
-                  <RiskAssessmentCard
-                    key={dataPoint.id}
-                    data={value as RiskAssessment}
-                  />
-                );
-              }
-
-              if (dataPoint.key === "domain_intel_signals") {
-                return (
-                  <DomainIntelSignalsCard
-                    key={dataPoint.id}
-                    data={value as DomainIntelSignals}
-                  />
-                );
-              }
-
-              // Generic fallback for unknown data point types
+        <h2 className="text-2xl font-bold mb-4">Assessments</h2>
+        <div className="space-y-4">
+          {/* AI Generated Likelihood */}
+          {(() => {
+            const aiDataPoint = domain.dataPoints.find((dp: any) => dp.key === "ai_generated_likelihood");
+            if (aiDataPoint) {
+              const value = JSON.parse(aiDataPoint.value);
+              const rawResponse = JSON.parse(aiDataPoint.rawOpenAIResponse || "{}");
               return (
-                <Card key={dataPoint.id}>
-                  <CardHeader>
-                    <CardTitle>{dataPoint.label}</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <pre className="text-xs bg-muted p-4 rounded overflow-auto">
-                      {JSON.stringify(value, null, 2)}
-                    </pre>
-                  </CardContent>
-                </Card>
+                <AiGeneratedLikelihoodCard
+                  key={aiDataPoint.id}
+                  data={value as AiGeneratedLikelihood}
+                  rawOpenAIResponse={rawResponse}
+                  domainId={domain.id}
+                />
               );
-            })}
-          </div>
-        )}
+            }
+            return (
+              <Card>
+                <CardHeader className="pb-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1.5">
+                      <CardTitle className="flex items-center gap-2">
+                        <Bot className="h-5 w-5" />
+                        AI-generated likelihood
+                      </CardTitle>
+                      <CardDescription>
+                        Heuristic estimate based on content, markup, and infrastructure signals
+                      </CardDescription>
+                    </div>
+                    <AiScanButton
+                      domainId={domain.id}
+                      hasExistingAiScore={false}
+                    />
+                  </div>
+                </CardHeader>
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  <Bot className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p>AI likelihood assessment not yet generated</p>
+                  <p className="text-sm mt-1">Click &quot;Re-analyze AI&quot; to analyze</p>
+                </CardContent>
+              </Card>
+            );
+          })()}
+
+          {/* Risk Assessment */}
+          {(() => {
+            const riskDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_risk_assessment");
+            if (riskDataPoint) {
+              const value = JSON.parse(riskDataPoint.value);
+              return (
+                <RiskAssessmentCard
+                  key={riskDataPoint.id}
+                  data={value as RiskAssessment}
+                  domainId={domain.id}
+                />
+              );
+            }
+            return (
+              <Card>
+                <CardHeader className="pb-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1.5">
+                      <CardTitle className="flex items-center gap-2">
+                        <AlertTriangle className="h-5 w-5" />
+                        Risk Assessment
+                      </CardTitle>
+                      <CardDescription>
+                        Multi-factor risk analysis based on domain intelligence signals
+                      </CardDescription>
+                    </div>
+                    <RiskScanButton
+                      domainId={domain.id}
+                      hasExistingRiskScore={false}
+                    />
+                  </div>
+                </CardHeader>
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  <AlertTriangle className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p>Risk assessment not yet generated</p>
+                  <p className="text-sm mt-1">Click &quot;Re-scan Risk&quot; to analyze</p>
+                </CardContent>
+              </Card>
+            );
+          })()}
+        </div>
       </div>
 
-      {/* Homepage SKUs */}
-      <HomepageSkusCard domainId={domain.id} />
+      {/* Data Points Extracted Section */}
+      <div>
+        <h2 className="text-2xl font-bold mb-4">Data Points Extracted</h2>
+        <div className="space-y-4">
+          {/* Contact Details */}
+          {(() => {
+            const contactDataPoint = domain.dataPoints.find((dp: any) => dp.key === "contact_details");
+            if (contactDataPoint) {
+              const value = JSON.parse(contactDataPoint.value);
+              const sources = JSON.parse(contactDataPoint.sources);
+              return (
+                <ContactDetailsCard
+                  key={contactDataPoint.id}
+                  data={value as ContactDetails}
+                  sources={sources}
+                />
+              );
+            }
+            return (
+              <Card>
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  <Mail className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                  <p>No contact details extracted yet</p>
+                </CardContent>
+              </Card>
+            );
+          })()}
+
+          {/* Homepage SKUs */}
+          <HomepageSkusCard domainId={domain.id} initialScanStatus={latestScan?.status} />
+
+          {/* Policy Links */}
+          <PolicyLinksCard domainId={domain.id} initialScanStatus={latestScan?.status} />
+
+          {/* Domain Intelligence Signals */}
+          {(() => {
+            const signalsDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_intel_signals");
+            if (signalsDataPoint) {
+              const value = JSON.parse(signalsDataPoint.value);
+              return (
+                <DomainIntelSignalsCard
+                  key={signalsDataPoint.id}
+                  data={value as DomainIntelSignals}
+                />
+              );
+            }
+            return null;
+          })()}
+        </div>
+      </div>
 
       {/* Sources */}
       {domain.dataPoints.length > 0 && (
@@ -260,7 +298,7 @@ export default async function ScanDetailPage({
                     href={source}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-2 text-sm text-blue-600 hover:underline"
+                    className="flex items-center gap-2 text-sm text-link hover:underline"
                   >
                     <Globe className="h-3 w-3" />
                     {source}
@@ -280,7 +318,7 @@ export default async function ScanDetailPage({
             return (
               <AccordionItem
                 key={dataPoint.id}
-                title={`Raw OpenAI Response - ${dataPoint.label}`}
+                title={`Raw AI Response - ${dataPoint.label}`}
               >
                 <pre className="text-xs bg-muted p-4 rounded overflow-auto max-h-96">
                   {JSON.stringify(rawResponse, null, 2)}
@@ -333,7 +371,7 @@ export default async function ScanDetailPage({
                             href={log.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-xs text-blue-600 hover:underline truncate max-w-md"
+                            className="text-xs text-link hover:underline truncate max-w-md"
                             title={log.url}
                           >
                             {log.url}
@@ -359,9 +397,9 @@ export default async function ScanDetailPage({
                       </TableCell>
                       <TableCell>
                         {log.robotsAllowed ? (
-                          <CheckCircle className="h-4 w-4 text-green-600" />
+                          <CheckCircle className="h-4 w-4 text-success" />
                         ) : (
-                          <XCircle className="h-4 w-4 text-red-600" />
+                          <XCircle className="h-4 w-4 text-destructive" />
                         )}
                       </TableCell>
                     </TableRow>
@@ -383,19 +421,18 @@ export default async function ScanDetailPage({
         </Accordion>
       )}
 
-      {/* Signal Logs (from latest scan) */}
+      {/* Signal Logs (from latest scan) - Collapsed */}
       {latestScan && latestScan.signalLogs && latestScan.signalLogs.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
+        <Accordion>
+          <AccordionItem title={
+            <span className="flex items-center gap-2">
               <Activity className="h-5 w-5" />
-              Signal Logs
-            </CardTitle>
-            <CardDescription>
+              Signal Logs - {latestScan.signalLogs.length} signals
+            </span>
+          }>
+            <p className="text-sm text-muted-foreground mb-4">
               Computed signals from risk intelligence analysis
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+            </p>
             <div className="border rounded-lg overflow-hidden">
               <Table>
                 <TableHeader>
@@ -420,9 +457,9 @@ export default async function ScanDetailPage({
                       <TableCell className="text-xs max-w-xs truncate">
                         {log.valueType === "boolean" ? (
                           log.valueBoolean ? (
-                            <CheckCircle className="h-4 w-4 text-green-600" />
+                            <CheckCircle className="h-4 w-4 text-success" />
                           ) : (
-                            <XCircle className="h-4 w-4 text-red-600" />
+                            <XCircle className="h-4 w-4 text-destructive" />
                           )
                         ) : log.valueType === "number" ? (
                           <span className="font-mono">{log.valueNumber}</span>
@@ -453,8 +490,8 @@ export default async function ScanDetailPage({
                 Showing 50 of {latestScan.signalLogs.length} signals
               </p>
             )}
-          </CardContent>
-        </Card>
+          </AccordionItem>
+        </Accordion>
       )}
 
       {/* Scan History */}
@@ -514,7 +551,7 @@ export default async function ScanDetailPage({
                     {input.rawInput}
                   </code>
                   <span className="text-muted-foreground text-xs">
-                    {formatDistanceToNow(new Date(input.createdAt), { addSuffix: true })}
+                    {format(new Date(input.createdAt), "MMM d, yyyy 'at' h:mm a")}
                   </span>
                 </div>
               ))}
@@ -546,16 +583,19 @@ function ContactDetailsCard({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Mail className="h-5 w-5" />
-          Contact Details
-        </CardTitle>
-        <CardDescription>
-          Contact information extracted from the website
-        </CardDescription>
+      <CardHeader className="pb-4">
+        <div className="space-y-1.5">
+          <CardTitle className="flex items-center gap-2">
+            <Mail className="h-5 w-5" />
+            Contact Details
+          </CardTitle>
+          <CardDescription>
+            Contact information extracted from the website
+          </CardDescription>
+        </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        <CardDivider className="-mt-2" />
         {data.primary_contact_page_url && (
           <div>
             <p className="text-sm font-medium text-muted-foreground mb-2">
@@ -565,7 +605,7 @@ function ContactDetailsCard({
               href={data.primary_contact_page_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:underline flex items-center gap-2"
+              className="text-link hover:underline flex items-center gap-2"
             >
               {data.primary_contact_page_url}
               <ExternalLink className="h-3 w-3" />
@@ -582,7 +622,7 @@ function ContactDetailsCard({
             <ul className="space-y-1">
               {data.emails.map((email, idx) => (
                 <li key={idx}>
-                  <a href={`mailto:${email}`} className="text-blue-600 hover:underline">
+                  <a href={`mailto:${email}`} className="text-link hover:underline">
                     {email}
                   </a>
                 </li>
@@ -600,7 +640,7 @@ function ContactDetailsCard({
             <ul className="space-y-1">
               {data.phone_numbers.map((phone, idx) => (
                 <li key={idx}>
-                  <a href={`tel:${phone}`} className="text-blue-600 hover:underline">
+                  <a href={`tel:${phone}`} className="text-link hover:underline">
                     {phone}
                   </a>
                 </li>
@@ -638,7 +678,7 @@ function ContactDetailsCard({
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline flex items-center gap-2"
+                    className="text-link hover:underline flex items-center gap-2"
                   >
                     {url}
                     <ExternalLink className="h-3 w-3" />
@@ -662,7 +702,7 @@ function ContactDetailsCard({
                     href={data.social_links.linkedin}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline flex items-center gap-2"
+                    className="text-link hover:underline flex items-center gap-2"
                   >
                     LinkedIn: {data.social_links.linkedin}
                     <ExternalLink className="h-3 w-3" />
@@ -675,7 +715,7 @@ function ContactDetailsCard({
                     href={data.social_links.twitter}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline flex items-center gap-2"
+                    className="text-link hover:underline flex items-center gap-2"
                   >
                     Twitter: {data.social_links.twitter}
                     <ExternalLink className="h-3 w-3" />
@@ -688,7 +728,7 @@ function ContactDetailsCard({
                     href={data.social_links.facebook}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline flex items-center gap-2"
+                    className="text-link hover:underline flex items-center gap-2"
                   >
                     Facebook: {data.social_links.facebook}
                     <ExternalLink className="h-3 w-3" />
@@ -701,7 +741,7 @@ function ContactDetailsCard({
                     href={data.social_links.instagram}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline flex items-center gap-2"
+                    className="text-link hover:underline flex items-center gap-2"
                   >
                     Instagram: {data.social_links.instagram}
                     <ExternalLink className="h-3 w-3" />
@@ -714,7 +754,7 @@ function ContactDetailsCard({
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline flex items-center gap-2"
+                    className="text-link hover:underline flex items-center gap-2"
                   >
                     Other: {url}
                     <ExternalLink className="h-3 w-3" />
@@ -757,9 +797,11 @@ interface OpenAIResponseStatus {
 function AiGeneratedLikelihoodCard({
   data,
   rawOpenAIResponse,
+  domainId,
 }: {
   data: AiGeneratedLikelihood;
   rawOpenAIResponse?: OpenAIResponseStatus;
+  domainId: string;
 }) {
   const score = data.ai_generated_score;
   const confidence = data.confidence;
@@ -768,55 +810,42 @@ function AiGeneratedLikelihoodCard({
   const openAiFailed = rawOpenAIResponse?.fallback === true || !!rawOpenAIResponse?.error;
   const openAiError = rawOpenAIResponse?.error;
 
-  // Determine color based on score
-  const getScoreColor = (score: number) => {
-    if (score <= 30) return "text-green-600";
-    if (score <= 50) return "text-yellow-600";
-    if (score <= 70) return "text-orange-500";
-    return "text-red-600";
-  };
-
-  const getProgressColor = (score: number) => {
-    if (score <= 30) return "bg-green-500";
-    if (score <= 50) return "bg-yellow-500";
-    if (score <= 70) return "bg-orange-500";
-    return "bg-red-500";
-  };
-
-  const getScoreLabel = (score: number) => {
-    if (score <= 20) return "Very Unlikely";
-    if (score <= 40) return "Unlikely";
-    if (score <= 60) return "Uncertain";
-    if (score <= 80) return "Likely";
-    return "Very Likely";
-  };
-
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Bot className="h-5 w-5" />
-          AI-generated likelihood
-        </CardTitle>
-        <CardDescription>
-          Heuristic estimate based on content, markup, and infrastructure signals
-        </CardDescription>
+      <CardHeader className="pb-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2">
+              <Bot className="h-5 w-5" />
+              AI-generated likelihood
+            </CardTitle>
+            <CardDescription>
+              Heuristic estimate based on content, markup, and infrastructure signals
+            </CardDescription>
+          </div>
+          <AiScanButton
+            domainId={domainId}
+            hasExistingAiScore={true}
+          />
+        </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        <CardDivider className="-mt-2" />
+
         {/* Main Score Display */}
         <div className="flex items-center gap-6">
           <div className="text-center">
-            <div className={`text-5xl font-bold ${getScoreColor(score)}`}>
+            <div className={`text-5xl font-bold ${getScoreTextColor(score)}`}>
               {score}
             </div>
             <div className="text-sm text-muted-foreground mt-1">
-              {getScoreLabel(score)}
+              {getAiLikelihoodLabel(score)}
             </div>
           </div>
           <div className="flex-1">
             <div className="h-4 bg-muted rounded-full overflow-hidden">
               <div
-                className={`h-full ${getProgressColor(score)} transition-all duration-300`}
+                className={`h-full ${getScoreBgColor(score)} transition-all duration-300`}
                 style={{ width: `${score}%` }}
               />
             </div>
@@ -831,28 +860,28 @@ function AiGeneratedLikelihoodCard({
         <div className="flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium">Confidence:</span>
-            <span className={`text-sm font-bold ${confidence < 30 ? "text-orange-500" : confidence < 60 ? "text-yellow-600" : "text-green-600"}`}>
+            <span className={`text-sm font-bold ${getConfidenceColor(confidence)}`}>
               {confidence}%
             </span>
           </div>
           {confidence < 30 && (
-            <Badge variant="outline" className="text-orange-500 border-orange-300">
+            <Badge variant="outline" className="text-caution border-caution/30">
               <AlertTriangle className="h-3 w-3 mr-1" />
               Low confidence
             </Badge>
           )}
         </div>
 
-        {/* OpenAI Analysis Status */}
+        {/* AI Analysis Status */}
         {openAiFailed ? (
-          <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg p-3">
+          <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
             <div className="flex items-start gap-2">
-              <XCircle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+              <XCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-medium text-red-700 dark:text-red-400">
-                  OpenAI Content Analysis Failed
+                <p className="text-sm font-medium text-destructive">
+                  AI Content Analysis Failed
                 </p>
-                <p className="text-xs text-red-600 dark:text-red-500 mt-1">
+                <p className="text-xs text-destructive/80 mt-1">
                   Score based on markup signals only (less accurate).
                   {openAiError && (
                     <span className="block mt-1 font-mono text-xs opacity-75">
@@ -864,9 +893,9 @@ function AiGeneratedLikelihoodCard({
             </div>
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-500">
+          <div className="flex items-center gap-2 text-sm text-success">
             <CheckCircle className="h-4 w-4" />
-            <span>OpenAI content analysis completed</span>
+            <span>AI content analysis completed</span>
           </div>
         )}
 
@@ -875,12 +904,12 @@ function AiGeneratedLikelihoodCard({
           <div className="bg-muted/50 rounded-lg p-3">
             <div className="text-xs text-muted-foreground mb-1">Content Score</div>
             <div className="flex items-center gap-2">
-              <div className={`text-2xl font-bold ${getScoreColor(data.subscores.content)}`}>
+              <div className={`text-2xl font-bold ${getScoreTextColor(data.subscores.content)}`}>
                 {data.subscores.content}
               </div>
               <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                 <div
-                  className={`h-full ${getProgressColor(data.subscores.content)}`}
+                  className={`h-full ${getScoreBgColor(data.subscores.content)}`}
                   style={{ width: `${data.subscores.content}%` }}
                 />
               </div>
@@ -889,12 +918,12 @@ function AiGeneratedLikelihoodCard({
           <div className="bg-muted/50 rounded-lg p-3">
             <div className="text-xs text-muted-foreground mb-1">Markup Score</div>
             <div className="flex items-center gap-2">
-              <div className={`text-2xl font-bold ${getScoreColor(data.subscores.markup)}`}>
+              <div className={`text-2xl font-bold ${getScoreTextColor(data.subscores.markup)}`}>
                 {data.subscores.markup}
               </div>
               <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                 <div
-                  className={`h-full ${getProgressColor(data.subscores.markup)}`}
+                  className={`h-full ${getScoreBgColor(data.subscores.markup)}`}
                   style={{ width: `${data.subscores.markup}%` }}
                 />
               </div>
@@ -903,12 +932,12 @@ function AiGeneratedLikelihoodCard({
           <div className="bg-muted/50 rounded-lg p-3">
             <div className="text-xs text-muted-foreground mb-1">Infrastructure Score</div>
             <div className="flex items-center gap-2">
-              <div className={`text-2xl font-bold ${getScoreColor(data.subscores.infrastructure ?? 0)}`}>
+              <div className={`text-2xl font-bold ${getScoreTextColor(data.subscores.infrastructure ?? 0)}`}>
                 {data.subscores.infrastructure ?? "-"}
               </div>
               <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
                 <div
-                  className={`h-full ${getProgressColor(data.subscores.infrastructure ?? 0)}`}
+                  className={`h-full ${getScoreBgColor(data.subscores.infrastructure ?? 0)}`}
                   style={{ width: `${data.subscores.infrastructure ?? 0}%` }}
                 />
               </div>
@@ -946,7 +975,7 @@ function AiGeneratedLikelihoodCard({
             <ul className="space-y-1">
               {data.signals.ai_markers.map((marker, idx) => (
                 <li key={idx} className="text-sm flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 text-orange-500 flex-shrink-0 mt-0.5" />
+                  <AlertCircle className="h-4 w-4 text-caution flex-shrink-0 mt-0.5" />
                   {marker}
                 </li>
               ))}
@@ -963,7 +992,7 @@ function AiGeneratedLikelihoodCard({
             <ul className="space-y-1">
               {data.signals.suspicious_content_patterns.map((pattern, idx) => (
                 <li key={idx} className="text-sm flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  <AlertCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
                   {pattern}
                 </li>
               ))}
@@ -978,7 +1007,7 @@ function AiGeneratedLikelihoodCard({
               Infrastructure Signals
             </p>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_robots_txt ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400" : "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400"}`}>
+              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_robots_txt ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}>
                 {data.signals.infrastructure.has_robots_txt ? (
                   <CheckCircle className="h-4 w-4" />
                 ) : (
@@ -986,7 +1015,7 @@ function AiGeneratedLikelihoodCard({
                 )}
                 robots.txt
               </div>
-              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_sitemap ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400" : "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400"}`}>
+              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_sitemap ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}>
                 {data.signals.infrastructure.has_sitemap ? (
                   <CheckCircle className="h-4 w-4" />
                 ) : (
@@ -994,7 +1023,7 @@ function AiGeneratedLikelihoodCard({
                 )}
                 sitemap.xml
               </div>
-              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_favicon ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400" : "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400"}`}>
+              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.has_favicon ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}>
                 {data.signals.infrastructure.has_favicon ? (
                   <CheckCircle className="h-4 w-4" />
                 ) : (
@@ -1003,17 +1032,17 @@ function AiGeneratedLikelihoodCard({
                 Favicon
               </div>
               {data.signals.infrastructure.free_hosting && (
-                <div className="flex items-center gap-2 text-sm p-2 rounded-md bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400">
+                <div className="flex items-center gap-2 text-sm p-2 rounded-md bg-caution/10 text-caution">
                   <AlertTriangle className="h-4 w-4" />
                   {data.signals.infrastructure.free_hosting}
                 </div>
               )}
-              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.seo_score >= 50 ? "bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400" : "bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400"}`}>
+              <div className={`flex items-center gap-2 text-sm p-2 rounded-md ${data.signals.infrastructure.seo_score >= 50 ? "bg-success/10 text-success" : "bg-caution/10 text-caution"}`}>
                 <Globe className="h-4 w-4" />
                 SEO: {data.signals.infrastructure.seo_score}/100
               </div>
               {data.signals.infrastructure.is_boilerplate && (
-                <div className="flex items-center gap-2 text-sm p-2 rounded-md bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400">
+                <div className="flex items-center gap-2 text-sm p-2 rounded-md bg-destructive/10 text-destructive">
                   <AlertCircle className="h-4 w-4" />
                   Boilerplate
                 </div>
@@ -1065,29 +1094,7 @@ function AiGeneratedLikelihoodCard({
 // Risk Assessment Card
 // =============================================================================
 
-function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
-  const getRiskColor = (score: number) => {
-    if (score <= 30) return "text-green-600";
-    if (score <= 50) return "text-yellow-600";
-    if (score <= 70) return "text-orange-500";
-    return "text-red-600";
-  };
-
-  const getProgressColor = (score: number) => {
-    if (score <= 30) return "bg-green-500";
-    if (score <= 50) return "bg-yellow-500";
-    if (score <= 70) return "bg-orange-500";
-    return "bg-red-500";
-  };
-
-  const getRiskLabel = (score: number) => {
-    if (score <= 20) return "Very Low";
-    if (score <= 40) return "Low";
-    if (score <= 60) return "Moderate";
-    if (score <= 80) return "High";
-    return "Very High";
-  };
-
+function RiskAssessmentCard({ data, domainId }: { data: RiskAssessment; domainId: string }) {
   const riskTypeLabels: Record<string, string> = {
     phishing: "Phishing",
     fraud: "Fraud",
@@ -1104,20 +1111,30 @@ function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <AlertTriangle className="h-5 w-5" />
-          Risk Assessment
-        </CardTitle>
-        <CardDescription>
-          Multi-factor risk analysis based on domain intelligence signals
-        </CardDescription>
+      <CardHeader className="pb-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-1.5">
+            <CardTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5" />
+              Risk Assessment
+            </CardTitle>
+            <CardDescription>
+              Multi-factor risk analysis based on domain intelligence signals
+            </CardDescription>
+          </div>
+          <RiskScanButton
+            domainId={domainId}
+            hasExistingRiskScore={true}
+          />
+        </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        <CardDivider className="-mt-2" />
+
         {/* Main Score Display */}
         <div className="flex items-center gap-6">
           <div className="text-center">
-            <div className={`text-5xl font-bold ${getRiskColor(data.overall_risk_score)}`}>
+            <div className={`text-5xl font-bold ${getScoreTextColor(data.overall_risk_score)}`}>
               {data.overall_risk_score}
             </div>
             <div className="text-sm text-muted-foreground mt-1">
@@ -1127,7 +1144,7 @@ function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
           <div className="flex-1">
             <div className="h-4 bg-muted rounded-full overflow-hidden">
               <div
-                className={`h-full ${getProgressColor(data.overall_risk_score)} transition-all duration-300`}
+                className={`h-full ${getScoreBgColor(data.overall_risk_score)} transition-all duration-300`}
                 style={{ width: `${data.overall_risk_score}%` }}
               />
             </div>
@@ -1145,12 +1162,12 @@ function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
           </Badge>
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium">Confidence:</span>
-            <span className={`text-sm font-bold ${data.confidence < 50 ? "text-orange-500" : data.confidence < 70 ? "text-yellow-600" : "text-green-600"}`}>
+            <span className={`text-sm font-bold ${getConfidenceColor(data.confidence)}`}>
               {data.confidence}%
             </span>
           </div>
           {data.confidence < 50 && (
-            <Badge variant="outline" className="text-orange-500 border-orange-300">
+            <Badge variant="outline" className="text-caution border-caution/30">
               <AlertTriangle className="h-3 w-3 mr-1" />
               Low confidence
             </Badge>
@@ -1168,11 +1185,11 @@ function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
               </div>
               <div className="flex-1 h-3 bg-muted rounded-full overflow-hidden">
                 <div
-                  className={`h-full ${getProgressColor(score)} transition-all duration-300`}
+                  className={`h-full ${getScoreBgColor(score)} transition-all duration-300`}
                   style={{ width: `${score}%` }}
                 />
               </div>
-              <span className={`text-sm font-bold w-8 text-right ${getRiskColor(score)}`}>
+              <span className={`text-sm font-bold w-8 text-right ${getScoreTextColor(score)}`}>
                 {score}
               </span>
             </div>
@@ -1186,7 +1203,7 @@ function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
             <ul className="space-y-1">
               {data.reasons.map((reason, idx) => (
                 <li key={idx} className="text-sm flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 text-orange-500 flex-shrink-0 mt-0.5" />
+                  <AlertCircle className="h-4 w-4 text-caution flex-shrink-0 mt-0.5" />
                   {reason}
                 </li>
               ))}
@@ -1208,7 +1225,7 @@ function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
                         href={url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="block text-xs text-blue-600 hover:underline truncate"
+                        className="block text-xs text-link hover:underline truncate"
                       >
                         {url}
                       </a>
@@ -1261,22 +1278,25 @@ function RiskAssessmentCard({ data }: { data: RiskAssessment }) {
 function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Globe className="h-5 w-5" />
-          Domain Intelligence Signals
-        </CardTitle>
-        <CardDescription>
-          Raw signals collected from {data.target_domain}
-        </CardDescription>
+      <CardHeader className="pb-4">
+        <div className="space-y-1.5">
+          <CardTitle className="flex items-center gap-2">
+            <Globe className="h-5 w-5" />
+            Domain Intelligence Signals
+          </CardTitle>
+          <CardDescription>
+            Raw signals collected from {data.target_domain}
+          </CardDescription>
+        </div>
       </CardHeader>
       <CardContent>
+        <hr className="border-border mb-4" />
         <Accordion>
           <AccordionItem title="Reachability & Response">
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <span className="text-muted-foreground">Status:</span>{" "}
-                <span className={data.reachability.is_active ? "text-green-600" : "text-red-600"}>
+                <span className={data.reachability.is_active ? "text-success" : "text-destructive"}>
                   {data.reachability.status_code || "N/A"} ({data.reachability.is_active ? "Active" : "Inactive"})
                 </span>
               </div>
@@ -1333,9 +1353,9 @@ function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">MX present:</span>
                 {data.dns.mx_present ? (
-                  <CheckCircle className="h-4 w-4 text-green-600" />
+                  <CheckCircle className="h-4 w-4 text-success" />
                 ) : (
-                  <XCircle className="h-4 w-4 text-red-600" />
+                  <XCircle className="h-4 w-4 text-destructive" />
                 )}
               </div>
             </div>
@@ -1346,9 +1366,9 @@ function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">HTTPS OK:</span>
                 {data.tls.https_ok ? (
-                  <CheckCircle className="h-4 w-4 text-green-600" />
+                  <CheckCircle className="h-4 w-4 text-success" />
                 ) : (
-                  <XCircle className="h-4 w-4 text-red-600" />
+                  <XCircle className="h-4 w-4 text-destructive" />
                 )}
               </div>
               <div>
@@ -1375,9 +1395,9 @@ function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
               ].map(([name, present]) => (
                 <div key={String(name)} className="flex items-center gap-2">
                   {present ? (
-                    <CheckCircle className="h-4 w-4 text-green-600" />
+                    <CheckCircle className="h-4 w-4 text-success" />
                   ) : (
-                    <XCircle className="h-4 w-4 text-red-600" />
+                    <XCircle className="h-4 w-4 text-destructive" />
                   )}
                   <span>{String(name)}</span>
                 </div>
@@ -1417,7 +1437,7 @@ function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
               {Object.entries(data.policy_pages.page_exists).map(([path, info]) => (
                 <div key={path} className="flex items-center gap-2">
                   {info.exists ? (
-                    <CheckCircle className="h-4 w-4 text-green-600" />
+                    <CheckCircle className="h-4 w-4 text-success" />
                   ) : (
                     <XCircle className="h-4 w-4 text-muted-foreground" />
                   )}
@@ -1434,6 +1454,101 @@ function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
             </pre>
           </AccordionItem>
         </Accordion>
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================================================
+// Summary Card Component
+// =============================================================================
+
+function SummaryCard({
+  domain,
+  latestScan,
+}: {
+  domain: any;
+  latestScan: any;
+}) {
+  // Extract scores from data points
+  const riskDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_risk_assessment");
+  const aiDataPoint = domain.dataPoints.find((dp: any) => dp.key === "ai_generated_likelihood");
+
+  const riskScore = riskDataPoint ? JSON.parse(riskDataPoint.value).overall_risk_score : null;
+  const aiScore = aiDataPoint ? JSON.parse(aiDataPoint.value).ai_generated_score : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle>Summary</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <CardDivider />
+
+        {/* Key Scores Row */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className={`rounded-lg p-4 ${riskScore !== null ? getScoreBgColorSubtle(riskScore) : "bg-muted/50"}`}>
+            <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+              <AlertTriangle className="h-3 w-3" />
+              Risk Score
+            </p>
+            {riskScore !== null ? (
+              <p className={`text-3xl font-bold ${getScoreTextColor(riskScore)}`}>{riskScore}</p>
+            ) : (
+              <p className="text-2xl font-bold text-muted-foreground">—</p>
+            )}
+          </div>
+          <div className={`rounded-lg p-4 ${aiScore !== null ? getScoreBgColorSubtle(aiScore) : "bg-muted/50"}`}>
+            <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+              <Bot className="h-3 w-3" />
+              AI Score
+            </p>
+            {aiScore !== null ? (
+              <p className={`text-3xl font-bold ${getScoreTextColor(aiScore)}`}>{aiScore}</p>
+            ) : (
+              <p className="text-2xl font-bold text-muted-foreground">—</p>
+            )}
+          </div>
+          <div className="rounded-lg p-4 bg-muted/50">
+            <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+              <ShoppingCart className="h-3 w-3" />
+              Detected SKUs
+            </p>
+            <HomepageSkuCountClient domainId={domain.id} initialScanStatus={latestScan?.status} />
+          </div>
+        </div>
+
+        <CardDivider />
+
+        {/* Domain Info Row */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div>
+            <p className="text-sm text-muted-foreground mb-1">Domain</p>
+            <p className="font-medium">{domain.normalizedUrl}</p>
+          </div>
+          <div>
+            <p className="text-sm text-muted-foreground mb-1">Status</p>
+            <ScanStatusBadge
+              domainId={domain.id}
+              initialIsActive={domain.isActive}
+              initialStatusCode={domain.statusCode}
+              initialScanStatus={latestScan?.status ?? null}
+              initialScanCreatedAt={latestScan?.createdAt?.toISOString() ?? null}
+            />
+          </div>
+          <div>
+            <p className="text-sm text-muted-foreground mb-1">Last Scanned</p>
+            <p className="font-medium text-sm">
+              {domain.lastCheckedAt
+                ? format(new Date(domain.lastCheckedAt), "PPp")
+                : "Never"}
+            </p>
+          </div>
+          <div>
+            <p className="text-sm text-muted-foreground mb-1">Total Scans</p>
+            <p className="font-medium text-sm">{domain.scans.length}</p>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );

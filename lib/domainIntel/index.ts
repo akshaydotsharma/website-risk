@@ -18,6 +18,15 @@ export {
   type HomepageSkuItem,
   type ExtractHomepageSkusResult,
 } from './extractHomepageSkus';
+export {
+  extractPolicyLinks,
+  runPolicyLinksExtraction,
+  persistPolicyLinks,
+  type PolicyType,
+  type PolicyLinkVerified,
+  type PolicyLinksSummary,
+  type ExtractPolicyLinksResult,
+} from './extractPolicyLinks';
 
 import { prisma } from '../prisma';
 import { collectSignals } from './collectSignals';

@@ -62,6 +62,94 @@ function hasPolicyPage(signals: DomainIntelSignals, ...paths: string[]): boolean
   return paths.some(path => signals.policy_pages.page_exists[path]?.exists);
 }
 
+// Interface for extracted contact details from AI extraction
+interface ExtractedContactDetails {
+  primary_contact_page_url: string | null;
+  emails: string[];
+  phone_numbers: string[];
+  addresses: string[];
+  contact_form_urls: string[];
+  social_links: {
+    linkedin: string | null;
+    twitter: string | null;
+    facebook: string | null;
+    instagram: string | null;
+    other: string[];
+  };
+  notes: string | null;
+}
+
+/**
+ * Check if extracted contact details contain actual contact information
+ */
+function hasExtractedContactInfo(contactDetails: ExtractedContactDetails | null): boolean {
+  if (!contactDetails) return false;
+
+  return (
+    contactDetails.emails.length > 0 ||
+    contactDetails.phone_numbers.length > 0 ||
+    contactDetails.addresses.length > 0 ||
+    contactDetails.primary_contact_page_url !== null ||
+    contactDetails.contact_form_urls.length > 0
+  );
+}
+
+/**
+ * Fetch extracted contact details from the database
+ */
+async function getExtractedContactDetails(scanId: string): Promise<ExtractedContactDetails | null> {
+  try {
+    const dataPoint = await prisma.scanDataPoint.findFirst({
+      where: {
+        scanId,
+        key: 'contact_details',
+      },
+    });
+
+    if (!dataPoint) return null;
+
+    return JSON.parse(dataPoint.value) as ExtractedContactDetails;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verified policy links from the PolicyLink table
+ */
+interface VerifiedPolicyLinks {
+  privacy: boolean;
+  refund: boolean;
+  terms: boolean;
+}
+
+/**
+ * Fetch verified policy links from the database
+ * These are more reliable than the simple HEAD/GET checks in collectSignals
+ */
+async function getVerifiedPolicyLinks(scanId: string): Promise<VerifiedPolicyLinks> {
+  try {
+    const policyLinks = await prisma.policyLink.findMany({
+      where: {
+        scanId,
+        verifiedOk: true,
+      },
+      select: {
+        policyType: true,
+      },
+    });
+
+    const types = new Set(policyLinks.map(p => p.policyType));
+    return {
+      privacy: types.has('privacy'),
+      refund: types.has('refund'),
+      terms: types.has('terms'),
+    };
+  } catch {
+    return { privacy: false, refund: false, terms: false };
+  }
+}
+
 // =============================================================================
 // Phishing Score Calculation
 // =============================================================================
@@ -204,7 +292,11 @@ function calculatePhishingScore(signals: DomainIntelSignals): ScoreResult {
 // Fraud Score Calculation
 // =============================================================================
 
-function calculateFraudScore(signals: DomainIntelSignals): ScoreResult {
+function calculateFraudScore(
+  signals: DomainIntelSignals,
+  extractedContactDetails: ExtractedContactDetails | null,
+  verifiedPolicyLinks: VerifiedPolicyLinks
+): ScoreResult {
   let score = 0;
   const applications: WeightApplication[] = [];
 
@@ -263,8 +355,10 @@ function calculateFraudScore(signals: DomainIntelSignals): ScoreResult {
   }
 
   // MEDIUM: Missing contact/about
-  const hasContact = hasPolicyPage(signals, '/contact', '/about');
-  if (!hasContact) {
+  // Check both standard URL paths AND extracted contact details
+  const hasContactPage = hasPolicyPage(signals, '/contact', '/about');
+  const hasExtractedContact = hasExtractedContactInfo(extractedContactDetails);
+  if (!hasContactPage && !hasExtractedContact) {
     score += FRAUD_WEIGHTS.missing_contact_page;
     applications.push({
       weight_key: 'missing_contact_page',
@@ -274,8 +368,9 @@ function calculateFraudScore(signals: DomainIntelSignals): ScoreResult {
   }
 
   // MEDIUM: Missing policy pages
-  const hasPrivacy = hasPolicyPage(signals, '/privacy', '/privacy-policy');
-  const hasTerms = hasPolicyPage(signals, '/terms', '/terms-of-service');
+  // Check both signal checks AND verified policy links from PolicyLink table
+  const hasPrivacy = hasPolicyPage(signals, '/privacy', '/privacy-policy') || verifiedPolicyLinks.privacy;
+  const hasTerms = hasPolicyPage(signals, '/terms', '/terms-of-service') || verifiedPolicyLinks.terms;
   if (!hasPrivacy && !hasTerms) {
     score += FRAUD_WEIGHTS.missing_policy_pages;
     applications.push({
@@ -353,13 +448,18 @@ function calculateFraudScore(signals: DomainIntelSignals): ScoreResult {
 // Compliance Score Calculation
 // =============================================================================
 
-function calculateComplianceScore(signals: DomainIntelSignals): ScoreResult {
+function calculateComplianceScore(
+  signals: DomainIntelSignals,
+  extractedContactDetails: ExtractedContactDetails | null,
+  verifiedPolicyLinks: VerifiedPolicyLinks
+): ScoreResult {
   let score = 0;
   const applications: WeightApplication[] = [];
   const isEcommerce = hasEcommerceIndicators(signals);
 
   // MEDIUM: Missing privacy policy
-  if (!hasPolicyPage(signals, '/privacy', '/privacy-policy')) {
+  // Check both signal checks AND verified policy links from PolicyLink table
+  if (!hasPolicyPage(signals, '/privacy', '/privacy-policy') && !verifiedPolicyLinks.privacy) {
     score += COMPLIANCE_WEIGHTS.missing_privacy_policy;
     applications.push({
       weight_key: 'missing_privacy_policy',
@@ -369,7 +469,8 @@ function calculateComplianceScore(signals: DomainIntelSignals): ScoreResult {
   }
 
   // MEDIUM: Missing terms
-  if (!hasPolicyPage(signals, '/terms', '/terms-of-service')) {
+  // Check both signal checks AND verified policy links from PolicyLink table
+  if (!hasPolicyPage(signals, '/terms', '/terms-of-service') && !verifiedPolicyLinks.terms) {
     score += COMPLIANCE_WEIGHTS.missing_terms;
     applications.push({
       weight_key: 'missing_terms',
@@ -379,7 +480,8 @@ function calculateComplianceScore(signals: DomainIntelSignals): ScoreResult {
   }
 
   // MEDIUM: Missing refund policy (e-commerce only)
-  if (isEcommerce && !hasPolicyPage(signals, '/refund', '/returns')) {
+  // Check both signal checks AND verified policy links from PolicyLink table
+  if (isEcommerce && !hasPolicyPage(signals, '/refund', '/returns') && !verifiedPolicyLinks.refund) {
     score += COMPLIANCE_WEIGHTS.missing_refund_policy;
     applications.push({
       weight_key: 'missing_refund_policy',
@@ -399,7 +501,10 @@ function calculateComplianceScore(signals: DomainIntelSignals): ScoreResult {
   }
 
   // WEAK-MEDIUM: Missing contact
-  if (!hasPolicyPage(signals, '/contact')) {
+  // Check both standard URL paths AND extracted contact details
+  const hasContactPage = hasPolicyPage(signals, '/contact');
+  const hasExtractedContact = hasExtractedContactInfo(extractedContactDetails);
+  if (!hasContactPage && !hasExtractedContact) {
     score += COMPLIANCE_WEIGHTS.missing_contact;
     applications.push({
       weight_key: 'missing_contact',
@@ -419,8 +524,10 @@ function calculateComplianceScore(signals: DomainIntelSignals): ScoreResult {
   }
 
   // WEAK-MEDIUM: Payment keywords without policies
+  // Check both signal checks AND verified policy links from PolicyLink table
   if (signals.content.payment_keyword_hint) {
-    const hasAnyPolicy = hasPolicyPage(signals, '/privacy', '/privacy-policy', '/terms', '/terms-of-service');
+    const hasAnyPolicy = hasPolicyPage(signals, '/privacy', '/privacy-policy', '/terms', '/terms-of-service') ||
+      verifiedPolicyLinks.privacy || verifiedPolicyLinks.terms;
     if (!hasAnyPolicy) {
       score += COMPLIANCE_WEIGHTS.payment_keywords_no_policies;
       applications.push({
@@ -458,7 +565,11 @@ function calculateComplianceScore(signals: DomainIntelSignals): ScoreResult {
 // Credit Score Calculation
 // =============================================================================
 
-function calculateCreditScore(signals: DomainIntelSignals): ScoreResult {
+function calculateCreditScore(
+  signals: DomainIntelSignals,
+  extractedContactDetails: ExtractedContactDetails | null,
+  verifiedPolicyLinks: VerifiedPolicyLinks
+): ScoreResult {
   let score = 0;
   const applications: WeightApplication[] = [];
 
@@ -483,8 +594,13 @@ function calculateCreditScore(signals: DomainIntelSignals): ScoreResult {
   }
 
   // MEDIUM: Missing contact AND policies
-  const hasContact = hasPolicyPage(signals, '/contact', '/about');
-  const hasPolicies = hasPolicyPage(signals, '/privacy', '/privacy-policy', '/terms', '/terms-of-service');
+  // Check both standard URL paths AND extracted contact details
+  // Also check verified policy links from PolicyLink table
+  const hasContactPage = hasPolicyPage(signals, '/contact', '/about');
+  const hasExtractedContact = hasExtractedContactInfo(extractedContactDetails);
+  const hasContact = hasContactPage || hasExtractedContact;
+  const hasPolicies = hasPolicyPage(signals, '/privacy', '/privacy-policy', '/terms', '/terms-of-service') ||
+    verifiedPolicyLinks.privacy || verifiedPolicyLinks.terms;
   if (!hasContact && !hasPolicies) {
     score += CREDIT_WEIGHTS.missing_contact_and_policies;
     applications.push({
@@ -832,11 +948,18 @@ export async function scoreRisk(
   signals: DomainIntelSignals,
   urlsChecked: string[]
 ): Promise<RiskAssessment> {
+  // Fetch extracted contact details from database (from AI extraction)
+  const extractedContactDetails = await getExtractedContactDetails(scanId);
+
+  // Fetch verified policy links from database (from policy links extraction)
+  // These are more reliable than simple HEAD/GET checks
+  const verifiedPolicyLinks = await getVerifiedPolicyLinks(scanId);
+
   // Calculate individual risk scores
   const phishingResult = calculatePhishingScore(signals);
-  const fraudResult = calculateFraudScore(signals);
-  const complianceResult = calculateComplianceScore(signals);
-  const creditResult = calculateCreditScore(signals);
+  const fraudResult = calculateFraudScore(signals, extractedContactDetails, verifiedPolicyLinks);
+  const complianceResult = calculateComplianceScore(signals, extractedContactDetails, verifiedPolicyLinks);
+  const creditResult = calculateCreditScore(signals, extractedContactDetails, verifiedPolicyLinks);
 
   const riskTypeScores: RiskTypeScores = {
     phishing: phishingResult.score,

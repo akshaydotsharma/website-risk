@@ -15,9 +15,11 @@ function createPrismaClient() {
 
   const pool = new Pool({
     connectionString,
-    connectionTimeoutMillis: 10000, // 10s for Neon cold starts
+    connectionTimeoutMillis: 30000, // 30s for Neon cold starts
     idleTimeoutMillis: 30000,
     max: 10,
+    statement_timeout: 60000, // 60s statement timeout
+    query_timeout: 60000, // 60s query timeout
   });
   const adapter = new PrismaPg(pool);
 

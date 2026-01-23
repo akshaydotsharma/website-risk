@@ -75,4 +75,16 @@ const CardFooter = React.forwardRef<
 ));
 CardFooter.displayName = "CardFooter";
 
-export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent };
+const CardDivider = React.forwardRef<
+  HTMLHRElement,
+  React.HTMLAttributes<HTMLHRElement>
+>(({ className, ...props }, ref) => (
+  <hr
+    ref={ref}
+    className={cn("border-border/50 -mx-6 my-4", className)}
+    {...props}
+  />
+));
+CardDivider.displayName = "CardDivider";
+
+export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent, CardDivider };

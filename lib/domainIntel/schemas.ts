@@ -29,6 +29,7 @@ export const SignalCategorySchema = z.enum([
   'headers',
   'robots_sitemap',
   'policy_pages',
+  'policy_links',
   'forms',
   'third_party',
   'content',

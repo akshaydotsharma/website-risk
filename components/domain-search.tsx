@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Globe, CheckCircle, XCircle, Clock, ArrowRight, Loader2 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Search, Globe, CheckCircle, XCircle, Clock, ArrowRight, Loader2, Shield } from "lucide-react";
+import { cn, cleanUrl } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
+import { Switch } from "@/components/ui/switch";
 
 interface SearchResult {
   id: string;
@@ -22,7 +23,9 @@ export function DomainSearch() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [addToAuthorizedList, setAddToAuthorizedList] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -65,12 +68,13 @@ export function DomainSearch() {
   // Handle keyboard navigation
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (!isOpen) return;
+      if (isScanning) return;
+      if (!isOpen && e.key !== "Enter") return;
 
       switch (e.key) {
         case "ArrowDown":
           e.preventDefault();
-          setSelectedIndex((prev) => Math.min(prev + 1, results.length - 1));
+          setSelectedIndex((prev) => Math.min(prev + 1, results.length));
           break;
         case "ArrowUp":
           e.preventDefault();
@@ -78,10 +82,10 @@ export function DomainSearch() {
           break;
         case "Enter":
           e.preventDefault();
-          if (selectedIndex >= 0 && results[selectedIndex]) {
+          if (selectedIndex >= 0 && selectedIndex < results.length && results[selectedIndex]) {
             navigateToResult(results[selectedIndex]);
           } else if (query.trim()) {
-            // Navigate to new scan
+            // Trigger new scan directly
             handleNewScan();
           }
           break;
@@ -91,7 +95,7 @@ export function DomainSearch() {
           break;
       }
     },
-    [isOpen, results, selectedIndex, query]
+    [isOpen, isScanning, results, selectedIndex, query]
   );
 
   const navigateToResult = (result: SearchResult) => {
@@ -100,10 +104,40 @@ export function DomainSearch() {
     setQuery("");
   };
 
-  const handleNewScan = () => {
-    router.push(`/?url=${encodeURIComponent(query)}`);
+  const handleNewScan = async () => {
+    if (!query.trim() || isScanning) return;
+
+    const cleanedUrl = cleanUrl(query);
+    const normalizedUrl = `https://${cleanedUrl}`;
+
+    setIsScanning(true);
     setIsOpen(false);
-    setQuery("");
+
+    try {
+      const response = await fetch("/api/scans", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ url: normalizedUrl, addToAuthorizedList }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to create scan");
+      }
+
+      setQuery("");
+      router.push(`/scans/${data.id}`);
+    } catch (error) {
+      console.error("Scan error:", error);
+      // Fall back to homepage on error
+      router.push(`/?url=${encodeURIComponent(query)}`);
+      setQuery("");
+    } finally {
+      setIsScanning(false);
+    }
   };
 
   return (
@@ -111,7 +145,7 @@ export function DomainSearch() {
       {/* Search Input */}
       <div className="relative group">
         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-          {isLoading ? (
+          {isLoading || isScanning ? (
             <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
           ) : (
             <Search className="h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
@@ -120,20 +154,23 @@ export function DomainSearch() {
         <input
           ref={inputRef}
           type="text"
-          value={query}
+          value={isScanning ? "Scanning..." : query}
           onChange={(e) => {
+            if (isScanning) return;
             setQuery(e.target.value);
             setIsOpen(true);
             setSelectedIndex(-1);
           }}
-          onFocus={() => setIsOpen(true)}
+          onFocus={() => !isScanning && setIsOpen(true)}
           onKeyDown={handleKeyDown}
-          placeholder="Search scanned websites..."
+          placeholder="Search or scan a website..."
+          disabled={isScanning}
           className={cn(
             "w-full h-10 pl-10 pr-4 rounded-xl border bg-muted/50",
             "text-sm placeholder:text-muted-foreground",
             "focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary focus:bg-background",
-            "transition-all duration-200"
+            "transition-all duration-200",
+            isScanning && "opacity-70 cursor-not-allowed"
           )}
         />
         {query && (
@@ -219,6 +256,21 @@ export function DomainSearch() {
           {/* New Scan Option */}
           {query.length >= 2 && (
             <div className="border-t">
+              {/* Add to Authorized List Toggle */}
+              <div
+                className="px-3 py-2 flex items-center justify-between border-b bg-muted/30"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">Add to authorized list</span>
+                </div>
+                <Switch
+                  checked={addToAuthorizedList}
+                  onCheckedChange={setAddToAuthorizedList}
+                  className="scale-75"
+                />
+              </div>
               <button
                 onClick={handleNewScan}
                 onMouseEnter={() => setSelectedIndex(results.length)}
@@ -232,7 +284,9 @@ export function DomainSearch() {
                 </div>
                 <div className="flex-1">
                   <span className="text-sm font-medium">Scan &quot;{query}&quot;</span>
-                  <p className="text-xs text-muted-foreground">Start a new website scan</p>
+                  <p className="text-xs text-muted-foreground">
+                    {addToAuthorizedList ? "Add to authorized list & start scan" : "Start a new website scan"}
+                  </p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-muted-foreground" />
               </button>

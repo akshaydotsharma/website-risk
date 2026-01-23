@@ -22,13 +22,21 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatDistanceToNow } from "date-fns";
-import { History, Eye, RefreshCw, Trash2, Loader2, Bot } from "lucide-react";
+import { History, Eye, RefreshCw, Trash2, Loader2, Bot, ShieldAlert } from "lucide-react";
+import { getScoreTextColor, getScoreBgColor } from "@/lib/utils";
 
 interface DataPoint {
   id: string;
   key: string;
   label: string;
   value: string;
+}
+
+interface Scan {
+  id: string;
+  status: string; // "pending" | "processing" | "completed" | "failed"
+  error: string | null;
+  createdAt: string;
 }
 
 interface Domain {
@@ -40,6 +48,7 @@ interface Domain {
   createdAt: string;
   dataPoints: DataPoint[];
   scanCount: number;
+  scans: Scan[];
   recentInputs: {
     rawInput: string;
     source: string;
@@ -50,6 +59,7 @@ interface Domain {
 interface ScanHistoryTableProps {
   domains: Domain[];
   onDomainDeleted?: (domainId: string) => void;
+  onRefresh?: () => void;
 }
 
 type SortField = "normalizedUrl" | "isActive" | "lastCheckedAt" | "createdAt";
@@ -91,29 +101,100 @@ function getAiScore(dataPoints: DataPoint[]): { score: number | null; confidence
   }
 }
 
-// Get score color class
-function getScoreColorClass(score: number): string {
-  if (score <= 30) return "text-green-600";
-  if (score <= 50) return "text-yellow-600";
-  if (score <= 70) return "text-orange-500";
-  return "text-red-600";
+// Helper to get risk assessment score
+function getRiskScore(dataPoints: DataPoint[]): {
+  overallScore: number | null;
+  primaryRiskType: string | null;
+  confidence: string | null;
+  phishing: number | null;
+  fraud: number | null;
+  compliance: number | null;
+  credit: number | null;
+} {
+  const riskDataPoint = dataPoints.find((dp) => dp.key === "domain_risk_assessment");
+  if (!riskDataPoint) return { overallScore: null, primaryRiskType: null, confidence: null, phishing: null, fraud: null, compliance: null, credit: null };
+
+  try {
+    const value = JSON.parse(riskDataPoint.value);
+    return {
+      overallScore: value.overall_risk_score ?? null,
+      primaryRiskType: value.primary_risk_type ?? null,
+      confidence: value.confidence ?? null,
+      phishing: value.phishing_score ?? null,
+      fraud: value.fraud_score ?? null,
+      compliance: value.compliance_score ?? null,
+      credit: value.credit_score ?? null,
+    };
+  } catch {
+    return { overallScore: null, primaryRiskType: null, confidence: null, phishing: null, fraud: null, compliance: null, credit: null };
+  }
 }
 
-// Get score background color class
-function getScoreBgClass(score: number): string {
-  if (score <= 30) return "bg-green-500";
-  if (score <= 50) return "bg-yellow-500";
-  if (score <= 70) return "bg-orange-500";
-  return "bg-red-500";
+
+// Helper to check if domain has an in-progress scan
+// Only consider "pending" or "processing" if the scan was created recently (within 5 minutes)
+// This handles legacy scans that were created before the status field existed
+function isScanning(domain: Domain): boolean {
+  const latestScan = domain.scans?.[0];
+  if (!latestScan) return false;
+
+  const status = latestScan.status;
+  if (status === "completed" || status === "failed") return false;
+
+  // For pending/processing, check if scan is recent (within 5 minutes)
+  const scanAge = Date.now() - new Date(latestScan.createdAt).getTime();
+  const fiveMinutes = 5 * 60 * 1000;
+
+  return (status === "pending" || status === "processing") && scanAge < fiveMinutes;
 }
 
-export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableProps) {
+// Helper to check if domain has meaningful scan data
+function hasMeaningfulData(dataPoints: DataPoint[]): boolean {
+  // Check for key data points that indicate a successful scan
+  // Any extracted data means the scan at least partially succeeded
+  const meaningfulKeys = [
+    'domain_risk_assessment',
+    'ai_generated_likelihood',
+    'domain_intel_signals',
+    'homepage_sku_summary',
+    'contact_details',
+    'policy_links'
+  ];
+  return dataPoints.some(dp => meaningfulKeys.includes(dp.key));
+}
+
+// Helper to get effective scan status
+// A scan is considered successful if it has meaningful data, even if status says "failed"
+function getEffectiveScanStatus(domain: Domain): "completed" | "failed" | "pending" | "processing" | null {
+  const rawStatus = domain.scans?.[0]?.status ?? null;
+
+  // If status is failed but we have meaningful data, treat as completed
+  if (rawStatus === "failed" && hasMeaningfulData(domain.dataPoints)) {
+    return "completed";
+  }
+
+  return rawStatus as "completed" | "failed" | "pending" | "processing" | null;
+}
+
+export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHistoryTableProps) {
   const router = useRouter();
   const [sortField, setSortField] = useState<SortField>("lastCheckedAt");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [isLoading, setIsLoading] = useState(true);
   const [rescanning, setRescanning] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+
+  // Poll for updates when there are in-progress scans
+  useEffect(() => {
+    const hasInProgressScans = domains.some(isScanning);
+    if (!hasInProgressScans || !onRefresh) return;
+
+    const interval = setInterval(() => {
+      onRefresh();
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(interval);
+  }, [domains, onRefresh]);
 
   // Load saved sort preferences on mount
   useEffect(() => {
@@ -259,15 +340,16 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
             <TableRow>
               <TableHead>Website URL</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>AI Score</TableHead>
-              <TableHead>Last Scanned</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              <TableHead className="whitespace-nowrap">AI</TableHead>
+              <TableHead className="whitespace-nowrap">Risk</TableHead>
+              <TableHead className="whitespace-nowrap">Last Scanned</TableHead>
+              <TableHead className="whitespace-nowrap">Created</TableHead>
+              <TableHead className="text-right whitespace-nowrap">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             <TableRow>
-              <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+              <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                 Loading...
               </TableCell>
             </TableRow>
@@ -298,10 +380,16 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
             >
               Status
             </SortableTableHead>
-            <TableHead className="w-[100px]">
+            <TableHead className="w-[90px] whitespace-nowrap">
               <div className="flex items-center gap-1">
-                <Bot className="h-3 w-3" />
-                AI Score
+                <Bot className="h-3 w-3 flex-shrink-0" />
+                AI
+              </div>
+            </TableHead>
+            <TableHead className="w-[90px] whitespace-nowrap">
+              <div className="flex items-center gap-1">
+                <ShieldAlert className="h-3 w-3 flex-shrink-0" />
+                Risk
               </div>
             </TableHead>
             <SortableTableHead
@@ -309,6 +397,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
               currentSortKey={sortField}
               currentSortDirection={sortDirection}
               onSort={handleSort}
+              className="whitespace-nowrap"
             >
               Last Scanned
             </SortableTableHead>
@@ -317,10 +406,11 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
               currentSortKey={sortField}
               currentSortDirection={sortDirection}
               onSort={handleSort}
+              className="whitespace-nowrap"
             >
               Created
             </SortableTableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right whitespace-nowrap">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -353,12 +443,12 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
                       href={`https://${domain.normalizedUrl}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="hover:underline text-blue-600"
+                      className="hover:underline text-link"
                       onClick={(e) => e.stopPropagation()}
                     >
                       {domain.normalizedUrl}
                     </a>
-                    {domain.recentInputs.length > 0 && (
+                    {domain.recentInputs?.length > 0 && (
                       <TooltipProvider>
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -385,11 +475,31 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={domain.isActive ? "success" : "destructive"}>
-                    {domain.isActive
-                      ? `Active (${domain.statusCode})`
-                      : "Inactive"}
-                  </Badge>
+                  {isScanning(domain) ? (
+                    <Badge variant="secondary" className="gap-1">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Scanning
+                    </Badge>
+                  ) : getEffectiveScanStatus(domain) === "failed" ? (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Badge variant="destructive" className="cursor-help">
+                            Failed
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p className="text-xs">{domain.scans?.[0]?.error || "Unknown error"}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <Badge variant={domain.isActive ? "success" : "destructive"}>
+                      {domain.isActive
+                        ? `Active (${domain.statusCode})`
+                        : "Inactive"}
+                    </Badge>
+                  )}
                 </TableCell>
                 <TableCell>
                   {(() => {
@@ -402,12 +512,12 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <div className="flex items-center gap-2" data-interactive>
-                              <span className={`font-bold text-sm ${getScoreColorClass(score)}`}>
+                              <span className={`font-bold text-sm ${getScoreTextColor(score)}`}>
                                 {score}
                               </span>
                               <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
                                 <div
-                                  className={`h-full ${getScoreBgClass(score)}`}
+                                  className={`h-full ${getScoreBgColor(score)}`}
                                   style={{ width: `${score}%` }}
                                 />
                               </div>
@@ -419,6 +529,45 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
                               <p className="text-muted-foreground">
                                 Confidence: {confidence}%
                               </p>
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    );
+                  })()}
+                </TableCell>
+                <TableCell>
+                  {(() => {
+                    const { overallScore, primaryRiskType, confidence, phishing, fraud, compliance, credit } = getRiskScore(domain.dataPoints);
+                    if (overallScore === null) {
+                      return <span className="text-muted-foreground text-xs">-</span>;
+                    }
+                    return (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="flex items-center gap-2" data-interactive>
+                              <span className={`font-bold text-sm ${getScoreTextColor(overallScore)}`}>
+                                {overallScore}
+                              </span>
+                              <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full ${getScoreBgColor(overallScore)}`}
+                                  style={{ width: `${overallScore}%` }}
+                                />
+                              </div>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <div className="text-xs space-y-1">
+                              <p className="font-medium">Risk Assessment: {overallScore}/100</p>
+                              <p className="text-muted-foreground">Primary: {primaryRiskType} ({confidence})</p>
+                              <div className="pt-1 border-t border-border/50 space-y-0.5">
+                                <p>Phishing: {phishing}</p>
+                                <p>Fraud: {fraud}</p>
+                                <p>Compliance: {compliance}</p>
+                                <p>Credit: {credit}</p>
+                              </div>
                             </div>
                           </TooltipContent>
                         </Tooltip>
@@ -445,7 +594,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
                         <TooltipTrigger asChild>
                           <button
                             onClick={(e) => handleView(e, domain.id)}
-                            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                            className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
                           >
                             <Eye className="h-4 w-4" />
                           </button>
@@ -457,7 +606,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
                           <button
                             onClick={(e) => handleRescan(e, domain.id)}
                             disabled={rescanning === domain.id}
-                            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                            className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                           >
                             {rescanning === domain.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -473,7 +622,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted }: ScanHistoryTableP
                           <button
                             onClick={(e) => handleDelete(e, domain.id)}
                             disabled={deleting === domain.id}
-                            className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                            className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
                           >
                             {deleting === domain.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />

@@ -586,9 +586,9 @@ async function isContactPageValidWithBrowser(url: string, baseUrl: string, disco
 
     // If we got blocked (403/401) or challenge page, trust URLs with contact in path
     if (result.statusCode === 403 || result.statusCode === 401 || !result.content || result.content.length < 500) {
-      const hasContactInPath = /contact|enquir|get-in-touch|reach-us/i.test(pathLower);
+      const hasContactInPath = /contact|support|help|enquir|get-in-touch|reach-us/i.test(pathLower);
       if (hasContactInPath) {
-        console.log(`  Trusting contact URL despite bot protection (status: ${result.statusCode}): ${url}`);
+        console.log(`  Trusting contact URL despite bot protection or sparse content (status: ${result.statusCode}): ${url}`);
         return true;
       }
       console.log(`  Page has insufficient content or blocked: ${url}`);
@@ -611,7 +611,7 @@ async function isContactPageValidWithBrowser(url: string, baseUrl: string, disco
     console.log(`  Error validating contact page ${url}:`, error);
     // For click-discovered URLs or URLs with contact in path, return true even on error
     const pathLower = new URL(url).pathname.toLowerCase();
-    const hasContactInPath = /contact|enquir|get-in-touch|reach-us/i.test(pathLower);
+    const hasContactInPath = /contact|support|help|enquir|get-in-touch|reach-us/i.test(pathLower);
     return discoveredByClick || hasContactInPath;
   }
 }
@@ -1779,7 +1779,12 @@ async function analyzeWithClaude(
   deterministicSignals: ReturnType<typeof computeMarkupSignals>,
   infrastructureSignals: Awaited<ReturnType<typeof computeInfrastructureSignals>>
 ): Promise<AiGeneratedLikelihood> {
+  const currentYear = new Date().getFullYear();
+  const currentDate = new Date().toISOString().split('T')[0];
+
   const systemPrompt = `You are an AI content analyst helping assess whether a website's homepage appears to be AI-generated or is a potential scam/fake store.
+
+IMPORTANT: Today's date is ${currentDate}. The current year is ${currentYear}. When evaluating copyright notices or dates, consider ${currentYear} to be the current year, NOT a future date.
 
 IMPORTANT GUIDELINES:
 - You are providing a HEURISTIC ESTIMATE, not a definitive judgment

@@ -13,7 +13,8 @@ export interface FetchResult {
   robotsAllowed: boolean;
 }
 
-const DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+// Modern Chrome user agent
+const DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const DEFAULT_BROWSER_TIMEOUT = 60000;  // 60 seconds for overall operations
 const DEFAULT_NAVIGATION_TIMEOUT = 45000;  // 45 seconds for page navigation
 
@@ -21,17 +22,25 @@ const DEFAULT_NAVIGATION_TIMEOUT = 45000;  // 45 seconds for page navigation
 let browserInstance: Browser | null = null;
 
 /**
- * Get or create a browser instance
+ * Get or create a browser instance with stealth settings for bot protection bypass
  */
 export async function getBrowser(): Promise<Browser> {
   if (!browserInstance || !browserInstance.isConnected()) {
     browserInstance = await chromium.launch({
       headless: true,
       args: [
+        // Standard args
         "--disable-gpu",
         "--disable-dev-shm-usage",
         "--disable-setuid-sandbox",
         "--no-sandbox",
+        // Stealth args to avoid detection
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--window-size=1920,1080",
+        "--start-maximized",
+        // Reduce fingerprinting
+        "--disable-features=IsolateOrigins,site-per-process",
       ],
     });
   }
@@ -125,9 +134,69 @@ export async function fetchWithBrowser(
       userAgent: DEFAULT_USER_AGENT,
       viewport: { width: 1920, height: 1080 },
       ignoreHTTPSErrors: true,
+      // Additional stealth settings
+      locale: 'en-US',
+      timezoneId: 'America/New_York',
+      permissions: ['geolocation'],
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'sec-ch-ua': '"Chromium";v="122", "Google Chrome";v="122", "Not(A:Brand";v="99"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+      },
     });
 
     page = await context.newPage();
+
+    // Inject stealth scripts to avoid bot detection
+    await page.addInitScript(() => {
+      // Override webdriver property
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+      });
+
+      // Override plugins
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+          { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+        ],
+      });
+
+      // Override languages
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+      });
+
+      // Override hardwareConcurrency
+      Object.defineProperty(navigator, 'hardwareConcurrency', {
+        get: () => 8,
+      });
+
+      // Override deviceMemory
+      Object.defineProperty(navigator, 'deviceMemory', {
+        get: () => 8,
+      });
+
+      // Mock permissions query
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters: any) => (
+        parameters.name === 'notifications' ?
+          Promise.resolve({ state: Notification.permission } as PermissionStatus) :
+          originalQuery(parameters)
+      );
+
+      // Override chrome property
+      (window as any).chrome = {
+        runtime: {},
+        loadTimes: function() {},
+        csi: function() {},
+        app: {},
+      };
+    });
 
     // Set timeouts
     page.setDefaultTimeout(config.timeout ?? DEFAULT_BROWSER_TIMEOUT);
@@ -157,6 +226,9 @@ export async function fetchWithBrowser(
       result.statusCode = response.status();
       result.contentType = response.headers()["content-type"] ?? null;
     }
+
+    // Wait for Cloudflare challenge to complete (if present)
+    await waitForCloudflareChallenge(page);
 
     // Additional wait for dynamic content to load
     const waitTime = config.additionalWaitMs ?? 2000;
@@ -224,6 +296,43 @@ export async function fetchWithBrowser(
   }
 
   return result;
+}
+
+/**
+ * Wait for Cloudflare challenge to complete
+ * Cloudflare shows an interstitial page with "Checking your browser" that
+ * automatically resolves after a few seconds for legitimate browsers
+ */
+async function waitForCloudflareChallenge(page: Page): Promise<void> {
+  const maxWaitMs = 15000; // Maximum 15 seconds to wait for challenge
+  const checkIntervalMs = 500;
+  let elapsed = 0;
+
+  while (elapsed < maxWaitMs) {
+    const content = await page.content();
+
+    // Check if we're still on a Cloudflare challenge page
+    const isCloudflareChallenge =
+      content.includes('Just a moment') ||
+      content.includes('Checking your browser') ||
+      content.includes('cf-browser-verification') ||
+      content.includes('challenge-platform') ||
+      content.includes('_cf_chl_opt') ||
+      content.includes('Attention Required') ||
+      (content.includes('Cloudflare') && content.includes('Ray ID'));
+
+    if (!isCloudflareChallenge) {
+      // Challenge passed or not present
+      return;
+    }
+
+    // Still on challenge page, wait and check again
+    await page.waitForTimeout(checkIntervalMs);
+    elapsed += checkIntervalMs;
+  }
+
+  // Timed out waiting for challenge - log but continue anyway
+  console.log('Cloudflare challenge did not complete within timeout');
 }
 
 /**

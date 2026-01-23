@@ -13,6 +13,12 @@ async function getDomains() {
       scans: {
         orderBy: { createdAt: "desc" },
         take: 1,
+        select: {
+          id: true,
+          status: true,
+          error: true,
+          createdAt: true,
+        },
       },
       urlInputs: {
         orderBy: { createdAt: "desc" },
@@ -63,6 +69,12 @@ export default async function ScansPage() {
           createdAt: domain.createdAt.toISOString(),
           dataPoints: domain.dataPoints,
           scanCount: domain.scans.length,
+          scans: domain.scans.map((scan) => ({
+            id: scan.id,
+            status: scan.status,
+            error: scan.error,
+            createdAt: scan.createdAt.toISOString(),
+          })),
           recentInputs: domain.urlInputs.map((input) => ({
             rawInput: input.rawInput,
             source: input.source,

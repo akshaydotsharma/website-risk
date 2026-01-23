@@ -4,8 +4,8 @@ import * as React from "react";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-interface AccordionItemProps extends React.HTMLAttributes<HTMLDivElement> {
-  title: string;
+interface AccordionItemProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "title"> {
+  title: React.ReactNode;
   children: React.ReactNode;
 }
 

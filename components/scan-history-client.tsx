@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { ScanHistoryTable } from "@/components/scan-history-table";
@@ -12,6 +12,13 @@ interface DataPoint {
   value: string;
 }
 
+interface Scan {
+  id: string;
+  status: string;
+  error: string | null;
+  createdAt: string;
+}
+
 interface Domain {
   id: string;
   normalizedUrl: string;
@@ -21,6 +28,7 @@ interface Domain {
   createdAt: string;
   dataPoints: DataPoint[];
   scanCount: number;
+  scans: Scan[];
   recentInputs: {
     rawInput: string;
     source: string;
@@ -39,6 +47,18 @@ export function ScanHistoryClient({ initialDomains }: ScanHistoryClientProps) {
     setDomains((prev) => prev.filter((d) => d.id !== domainId));
   };
 
+  const handleRefresh = useCallback(async () => {
+    try {
+      const response = await fetch("/api/scans");
+      const data = await response.json();
+      if (data.domains) {
+        setDomains(data.domains);
+      }
+    } catch (error) {
+      console.error("Failed to refresh domains:", error);
+    }
+  }, []);
+
   if (domains.length === 0) {
     return (
       <div className="text-center py-12 border rounded-lg bg-muted/20">
@@ -54,6 +74,7 @@ export function ScanHistoryClient({ initialDomains }: ScanHistoryClientProps) {
     <ScanHistoryTable
       domains={domains}
       onDomainDeleted={handleDomainDeleted}
+      onRefresh={handleRefresh}
     />
   );
 }

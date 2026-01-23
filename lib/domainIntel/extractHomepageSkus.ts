@@ -2,7 +2,7 @@ import * as cheerio from 'cheerio';
 import type { Element, AnyNode } from 'domhandler';
 import { z } from 'zod';
 import { prisma } from '../prisma';
-import { fetchWithBrowser, closeBrowser } from '../browser';
+import { fetchWithBrowser } from '../browser';
 import type { DomainPolicy } from './schemas';
 
 // =============================================================================
@@ -63,7 +63,11 @@ const EXCLUDED_PATH_PATTERNS = [
   /^\/category\/?$/i, // Category index pages (root only)
   /^\/categories\/?$/i,
   /\/product-category\//i, // WooCommerce category pages
-  /\/collections?\/?$/i,
+  // Only exclude collection INDEX pages, not product pages nested under collections
+  // e.g., /collections/summer-sale should be excluded, but /collections/summer-sale/products/shirt should NOT
+  /\/collections?\/[^\/]+\/?$/i, // Collection listing pages (no further path segments)
+  /\/collection\/[^\/]+\/?$/i, // Collection pages (no further path segments)
+  /\/pages?\//i, // Static pages (about, contact, policies, etc.)
 ];
 
 // Elements to skip (navigation/footer/header regions)
@@ -93,7 +97,14 @@ const CURRENCY_PATTERNS: Array<{
   currency: string;
   symbol?: string;
 }> = [
-  // Symbol-first currencies
+  // Symbol-first currencies - prefixed $ symbols MUST come before plain $ to match correctly
+  { pattern: /R\$\s*([\d,]+\.?\d*)/i, currency: 'BRL', symbol: 'R$' },
+  { pattern: /C\$\s*([\d,]+\.?\d*)/i, currency: 'CAD', symbol: 'C$' },
+  { pattern: /A\$\s*([\d,]+\.?\d*)/i, currency: 'AUD', symbol: 'A$' },
+  { pattern: /HK\$\s*([\d,]+\.?\d*)/i, currency: 'HKD', symbol: 'HK$' },
+  { pattern: /S\$\s*([\d,]+\.?\d*)/i, currency: 'SGD', symbol: 'S$' },
+  { pattern: /NZ\$\s*([\d,]+\.?\d*)/i, currency: 'NZD', symbol: 'NZ$' },
+  // Plain $ must come after prefixed variants
   { pattern: /\$\s*([\d,]+\.?\d*)/i, currency: 'USD', symbol: '$' },
   { pattern: /£\s*([\d,]+\.?\d*)/i, currency: 'GBP', symbol: '£' },
   { pattern: /€\s*([\d,]+\.?\d*)/i, currency: 'EUR', symbol: '€' },
@@ -104,12 +115,6 @@ const CURRENCY_PATTERNS: Array<{
   { pattern: /₫\s*([\d,]+\.?\d*)/i, currency: 'VND', symbol: '₫' },
   { pattern: /฿\s*([\d,]+\.?\d*)/i, currency: 'THB', symbol: '฿' },
   { pattern: /₴\s*([\d,]+\.?\d*)/i, currency: 'UAH', symbol: '₴' },
-  { pattern: /R\$\s*([\d,]+\.?\d*)/i, currency: 'BRL', symbol: 'R$' },
-  { pattern: /C\$\s*([\d,]+\.?\d*)/i, currency: 'CAD', symbol: 'C$' },
-  { pattern: /A\$\s*([\d,]+\.?\d*)/i, currency: 'AUD', symbol: 'A$' },
-  { pattern: /HK\$\s*([\d,]+\.?\d*)/i, currency: 'HKD', symbol: 'HK$' },
-  { pattern: /S\$\s*([\d,]+\.?\d*)/i, currency: 'SGD', symbol: 'S$' },
-  { pattern: /NZ\$\s*([\d,]+\.?\d*)/i, currency: 'NZD', symbol: 'NZ$' },
 
   // Code-first currencies (e.g., "SGD 12.90", "AED 50")
   { pattern: /SGD\s*([\d,]+\.?\d*)/i, currency: 'SGD' },
@@ -154,21 +159,6 @@ const CURRENCY_PATTERNS: Array<{
   { pattern: /([\d,]+\.?\d*)\s*EUR/i, currency: 'EUR' },
 ];
 
-// Availability patterns
-const AVAILABILITY_PATTERNS = [
-  { pattern: /sold\s*out/i, hint: 'sold out' },
-  { pattern: /out\s*of\s*stock/i, hint: 'out of stock' },
-  { pattern: /in\s*stock/i, hint: 'in stock' },
-  { pattern: /available/i, hint: 'available' },
-  { pattern: /unavailable/i, hint: 'unavailable' },
-  { pattern: /back\s*order/i, hint: 'backorder' },
-  { pattern: /pre\s*-?\s*order/i, hint: 'preorder' },
-  { pattern: /coming\s*soon/i, hint: 'coming soon' },
-  { pattern: /limited\s*stock/i, hint: 'limited stock' },
-  { pattern: /few\s*left/i, hint: 'few left' },
-  { pattern: /only\s*\d+\s*left/i, hint: 'low stock' },
-];
-
 // =============================================================================
 // Types
 // =============================================================================
@@ -184,7 +174,6 @@ export const HomepageSkuSchema = z.object({
   originalPriceText: z.string().max(MAX_PRICE_TEXT_LENGTH).nullable(),
   originalAmount: z.number().nullable(),
   isOnSale: z.boolean(),
-  availabilityHint: z.string().max(50).nullable(),
   imageUrl: z.string().max(MAX_URL_LENGTH).nullable(),
   extractionMethod: z.string(),
   confidence: z.number().int().min(0).max(100),
@@ -222,11 +211,13 @@ export function normalizeProductUrl(href: string, baseUrl: string): string | nul
 
     const resolved = new URL(href, baseUrl);
 
-    // Remove tracking params but keep essential product identifiers
+    // Remove all query params to get canonical product URL
+    // This ensures we don't get duplicate entries for variants of the same product
+    // e.g., /products/shirt?variant=123 and /products/shirt?variant=456 both become /products/shirt
     const cleanUrl = new URL(resolved.origin + resolved.pathname);
 
-    // Keep certain query params that are likely product identifiers
-    const keepParams = ['id', 'product_id', 'item_id', 'sku', 'variant', 'v'];
+    // Only keep params that identify a DIFFERENT product (not variants of same product)
+    const keepParams = ['id', 'product_id', 'item_id', 'sku'];
     for (const param of keepParams) {
       if (resolved.searchParams.has(param)) {
         cleanUrl.searchParams.set(param, resolved.searchParams.get(param)!);
@@ -329,21 +320,6 @@ export function parsePrice(text: string): {
 }
 
 /**
- * Detect availability hints from text
- */
-export function detectAvailability(text: string): string | null {
-  const lowerText = text.toLowerCase();
-
-  for (const { pattern, hint } of AVAILABILITY_PATTERNS) {
-    if (pattern.test(lowerText)) {
-      return hint;
-    }
-  }
-
-  return null;
-}
-
-/**
  * Calculate confidence score for a SKU item
  */
 export function calculateConfidence(item: Partial<HomepageSkuItem>): number {
@@ -369,11 +345,6 @@ export function calculateConfidence(item: Partial<HomepageSkuItem>): number {
   // Image present (+10)
   if (item.imageUrl) {
     score += 10;
-  }
-
-  // Availability info (+5)
-  if (item.availabilityHint) {
-    score += 5;
   }
 
   // Parsed amount successfully (+5)
@@ -457,7 +428,8 @@ function findProductCard($: cheerio.CheerioAPI, $anchor: cheerio.Cheerio<Element
     'div[class*="product-card"]',
     'div[class*="card"][class*="product"]',
     'div[class*="item"][class*="product"]',
-    '[class*="product-snippet"]', // Shoplazza
+    '.shoplazza-product-snippet', // Shoplazza - exact class match (avoid matching img-link/img-wrapper)
+    'div[class*="product-snippet"]:not([class*="img-"]):not([class*="__price"])', // Shoplazza fallback
     '[class*="grid-item"]',
     '[class*="tile"]',
   ];
@@ -487,6 +459,48 @@ function findProductCard($: cheerio.CheerioAPI, $anchor: cheerio.Cheerio<Element
   return $anchor;
 }
 
+// Patterns that indicate the text is NOT a valid product title
+const INVALID_TITLE_PATTERNS = [
+  /^save\s+\d+%?$/i,           // "Save 31%", "Save 20"
+  /^\d+%\s*off$/i,             // "31% off", "20% OFF"
+  /^-\d+%$/i,                  // "-31%"
+  /^sale$/i,                   // Just "Sale"
+  /^new$/i,                    // Just "New"
+  /^hot$/i,                    // Just "Hot"
+  /^best\s*seller$/i,          // "Best Seller"
+  /^sold\s*out$/i,             // "Sold Out"
+  /^out\s*of\s*stock$/i,       // "Out of Stock"
+  /^in\s*stock$/i,             // "In Stock"
+  /^add\s*to\s*cart$/i,        // "Add to Cart"
+  /^buy\s*now$/i,              // "Buy Now"
+  /^shop\s*now$/i,             // "Shop Now"
+  /^view\s*(more|all|details)$/i, // "View More", "View All"
+  /^see\s*(more|all|details)$/i,  // "See More", "See All"
+  /^learn\s*more$/i,           // "Learn More"
+  /^quick\s*view$/i,           // "Quick View"
+  /^free\s*shipping$/i,        // "Free Shipping"
+  /^track\s*your\s*order$/i,   // "Track Your Order"
+  /^return.*exchange$/i,       // "Return & Exchange"
+];
+
+/**
+ * Check if a title is valid (not a discount badge, button text, etc.)
+ */
+function isValidTitle(text: string): boolean {
+  if (!text || text.length < 3 || text.length > 200) {
+    return false;
+  }
+
+  // Check against invalid patterns
+  for (const pattern of INVALID_TITLE_PATTERNS) {
+    if (pattern.test(text)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 /**
  * Extract title from a product card/anchor
  */
@@ -495,48 +509,50 @@ function extractTitle($: cheerio.CheerioAPI, $card: cheerio.Cheerio<AnyNode>, $a
   const $heading = $card.find('h1, h2, h3, h4, h5, h6').first();
   if ($heading.length > 0) {
     const text = $heading.text().trim();
-    if (text.length >= 3 && text.length <= 200) {
+    if (isValidTitle(text)) {
       return text.substring(0, MAX_TITLE_LENGTH);
     }
   }
 
   // Priority 2: Element with title-like class
   const titleSelectors = [
-    '[class*="title"]',
-    '[class*="name"]',
-    '[class*="heading"]',
+    '[class*="product-title"]',
     '[class*="product-name"]',
+    '[class*="item-title"]',
+    '[class*="item-name"]',
+    '[class*="title"]:not([class*="save"]):not([class*="discount"]):not([class*="badge"])',
+    '[class*="name"]:not([class*="user"]):not([class*="author"])',
   ];
 
   for (const selector of titleSelectors) {
     const $title = $card.find(selector).first();
     if ($title.length > 0) {
       const text = $title.text().trim();
-      if (text.length >= 3 && text.length <= 200) {
+      if (isValidTitle(text)) {
         return text.substring(0, MAX_TITLE_LENGTH);
       }
     }
   }
 
-  // Priority 3: Anchor text
-  const anchorText = $anchor.text().trim();
-  if (anchorText.length >= 3 && anchorText.length <= 200) {
-    return anchorText.substring(0, MAX_TITLE_LENGTH);
-  }
-
-  // Priority 4: Image alt text
-  const $img = $card.find('img').first();
+  // Priority 3: Image alt text (often has the real product name)
+  const $img = $card.find('img, spz-img').first();
   if ($img.length > 0) {
     const alt = $img.attr('alt')?.trim();
-    if (alt && alt.length >= 3 && alt.length <= 200) {
+    if (alt && isValidTitle(alt)) {
       return alt.substring(0, MAX_TITLE_LENGTH);
     }
   }
 
-  // Priority 5: Anchor aria-label
+  // Priority 4: Anchor aria-label
   const ariaLabel = $anchor.attr('aria-label')?.trim();
-  if (ariaLabel && ariaLabel.length >= 3 && ariaLabel.length <= 200) {
+  if (ariaLabel && isValidTitle(ariaLabel)) {
     return ariaLabel.substring(0, MAX_TITLE_LENGTH);
+  }
+
+  // Priority 5: Anchor text (last resort, often has extra text)
+  const anchorText = $anchor.text().trim();
+  if (isValidTitle(anchorText)) {
+    return anchorText.substring(0, MAX_TITLE_LENGTH);
   }
 
   return null;
@@ -673,6 +689,24 @@ function extractPrice($: cheerio.CheerioAPI, $card: cheerio.Cheerio<AnyNode>): E
           };
         }
       }
+
+      // Check for data-currencysymbol + data-money pattern (used by some platforms
+      // that render currency symbols via JavaScript)
+      const dataMoney = $el.attr('data-money');
+      const dataCurrencySymbol = $el.attr('data-currencysymbol');
+      if (dataMoney) {
+        // If we have both symbol and amount, combine them for parsing
+        const combinedPrice = dataCurrencySymbol ? `${dataCurrencySymbol}${dataMoney}` : dataMoney;
+        const parsedData = parsePrice(combinedPrice);
+        if (parsedData) {
+          return {
+            ...parsedData,
+            originalPriceText: null,
+            originalAmount: null,
+            isOnSale: false,
+          };
+        }
+      }
     }
   }
 
@@ -745,14 +779,6 @@ function extractImage($: cheerio.CheerioAPI, $card: cheerio.Cheerio<AnyNode>, ba
   }
 
   return null;
-}
-
-/**
- * Extract availability hint from a product card
- */
-function extractAvailability($: cheerio.CheerioAPI, $card: cheerio.Cheerio<AnyNode>): string | null {
-  const cardText = $card.text();
-  return detectAvailability(cardText);
 }
 
 // =============================================================================
@@ -868,10 +894,18 @@ export async function extractHomepageSkus(
       const title = extractTitle($, $card, $anchor);
       const priceInfo = extractPrice($, $card);
       const imageUrl = extractImage($, $card, baseUrl);
-      const availabilityHint = extractAvailability($, $card);
 
-      // Only include if it looks like a product (has price OR matches product URL pattern)
-      if (!isProductUrl && !priceInfo) {
+      // Only include if it looks like a product:
+      // 1. Must match product URL pattern (e.g., /products/)
+      // 2. Must have at least a title OR a price (to filter out low-quality extractions)
+      if (!isProductUrl) {
+        skippedNoProduct++;
+        return;
+      }
+
+      // Skip items that have neither title nor price - these are likely just image links
+      // without proper product card context
+      if (!title && !priceInfo) {
         skippedNoProduct++;
         return;
       }
@@ -888,7 +922,6 @@ export async function extractHomepageSkus(
         originalPriceText: priceInfo?.originalPriceText || null,
         originalAmount: priceInfo?.originalAmount || null,
         isOnSale: priceInfo?.isOnSale || false,
-        availabilityHint,
         imageUrl,
         extractionMethod: 'heuristic_v1',
         confidence: 0, // Will be calculated below
@@ -1095,6 +1128,19 @@ export async function runHomepageSkuExtraction(
           if (isCloudflareChallenge) {
             console.log(`Detected Cloudflare/bot protection challenge for ${sourceUrl}, falling back to browser-based fetch...`);
             homepageHtml = null; // Reset to trigger browser fetch below
+          } else {
+            // Check if this is a JavaScript-rendered page with few/no product links
+            // Shoplazza, some Shopify themes, and other JS-heavy platforms may return
+            // valid HTML but render products via JavaScript
+            const productLinkCount = (homepageHtml.match(/\/products?\//gi) || []).length;
+            const hasShoplazzaMarker = homepageHtml.includes('shoplazza') || homepageHtml.includes('window.__shoplazza');
+            const hasShopifyMarker = homepageHtml.includes('cdn.shopify.com') || homepageHtml.includes('Shopify.theme');
+            const isJsRenderedSite = hasShoplazzaMarker || hasShopifyMarker;
+
+            if (isJsRenderedSite && productLinkCount < 5) {
+              console.log(`Detected JS-rendered site (shoplazza=${hasShoplazzaMarker}, shopify=${hasShopifyMarker}) with only ${productLinkCount} product links. Falling back to browser-based fetch...`);
+              homepageHtml = null; // Reset to trigger browser fetch below
+            }
           }
         } else {
           return {
@@ -1112,19 +1158,26 @@ export async function runHomepageSkuExtraction(
           };
         }
       } else {
-        return {
-          items: [],
-          summary: {
-            totalDetected: 0,
-            withPrice: 0,
-            withTitle: 0,
-            withImage: 0,
-            topCurrency: null,
-            extractedAt: new Date().toISOString(),
-            method: 'heuristic_v1',
-            notes: [`Fetch failed with status ${response.status}`],
-          },
-        };
+        // Status codes 403/503 often indicate bot protection - don't return early, let browser fallback handle it
+        const isBotProtectionStatus = response.status === 403 || response.status === 503;
+        if (isBotProtectionStatus) {
+          console.log(`Got status ${response.status} (likely bot protection), falling back to browser-based fetch...`);
+          // homepageHtml stays null, will trigger browser fetch below
+        } else {
+          return {
+            items: [],
+            summary: {
+              totalDetected: 0,
+              withPrice: 0,
+              withTitle: 0,
+              withImage: 0,
+              topCurrency: null,
+              extractedAt: new Date().toISOString(),
+              method: 'heuristic_v1',
+              notes: [`Fetch failed with status ${response.status}`],
+            },
+          };
+        }
       }
     } catch (error) {
       console.error('Error fetching homepage for SKU extraction:', error);
@@ -1153,11 +1206,10 @@ export async function runHomepageSkuExtraction(
           console.log(`Browser fetch returned insufficient content: ${browserResult.content?.length || 0} chars`);
         }
 
-        // Clean up browser after fetching
-        await closeBrowser();
+        // Note: Do NOT close browser here - it's a shared singleton that other concurrent
+        // tasks may still be using. The browser will be reused across operations.
       } catch (browserError) {
         console.error('Browser-based fetch failed:', browserError);
-        await closeBrowser().catch(() => {});
 
         return {
           items: [],
@@ -1216,7 +1268,6 @@ export async function runHomepageSkuExtraction(
         originalPriceText: item.originalPriceText,
         originalAmount: item.originalAmount,
         isOnSale: item.isOnSale,
-        availabilityHint: item.availabilityHint,
         imageUrl: item.imageUrl,
         extractionMethod: item.extractionMethod,
         confidence: item.confidence,
