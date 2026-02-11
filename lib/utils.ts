@@ -130,7 +130,7 @@ export async function checkWebsiteActive(url: string): Promise<{
         signal: controller.signal,
         redirect: "follow",
         headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         },
       });
 
@@ -161,7 +161,8 @@ export async function checkWebsiteActive(url: string): Promise<{
   }
 
   // Both failed - return the most informative status code
-  // Prefer GET status if available since it's more reliable
+  // Note: Sites with SSL issues (weak DH key) may show inactive here,
+  // but the scan pipeline has browser fallbacks that will handle them correctly
   return {
     isActive: false,
     statusCode: getResult.statusCode ?? headResult.statusCode,

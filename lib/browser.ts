@@ -73,6 +73,8 @@ export interface DynamicFetchConfig {
   scrollToBottom?: boolean;
   /** Maximum time to wait for page in ms */
   timeout?: number;
+  /** Ignore HTTPS/SSL errors */
+  ignoreHTTPSErrors?: boolean;
 }
 
 const DEFAULT_EXPAND_SELECTORS = [

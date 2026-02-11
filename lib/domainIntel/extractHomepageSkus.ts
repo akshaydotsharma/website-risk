@@ -29,6 +29,9 @@ const PRODUCT_PATH_PATTERNS = [
   /\/dp\//i, // Amazon-style
   /\/pd\//i, // Alternate product detail
   /\/listing\//i,
+  // Magento-style product URLs - typically long descriptive slugs
+  // Pattern: paths that are 3+ words with hyphens and NOT ending in category-like patterns
+  /^\/[a-z0-9]+-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+(-[a-z0-9]+)*\/?$/i, // e.g., /product-name-with-multiple-words/
 ];
 
 // Paths to exclude (nav/footer/utility links)
@@ -896,9 +899,12 @@ export async function extractHomepageSkus(
       const imageUrl = extractImage($, $card, baseUrl);
 
       // Only include if it looks like a product:
-      // 1. Must match product URL pattern (e.g., /products/)
-      // 2. Must have at least a title OR a price (to filter out low-quality extractions)
-      if (!isProductUrl) {
+      // Option 1: Matches product URL pattern (e.g., /products/, /p/, or Magento-style slugs)
+      // Option 2: Has strong product signals (both title AND price, even if URL doesn't match pattern)
+      //          This handles Magento and other platforms with custom URL structures
+      const hasStrongProductSignals = title && priceInfo;
+
+      if (!isProductUrl && !hasStrongProductSignals) {
         skippedNoProduct++;
         return;
       }

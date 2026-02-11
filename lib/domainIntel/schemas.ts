@@ -34,6 +34,7 @@ export const SignalCategorySchema = z.enum([
   'third_party',
   'content',
   'scoring',
+  'rdap',
 ]);
 
 export type SignalCategory = z.infer<typeof SignalCategorySchema>;
@@ -188,6 +189,24 @@ export const ContentSignalsSchema = z.object({
 export type ContentSignals = z.infer<typeof ContentSignalsSchema>;
 
 // =============================================================================
+// K) RDAP / Domain Registration Signals
+// =============================================================================
+
+export const RdapSignalsSchema = z.object({
+  registration_date: z.string().nullable(),      // ISO 8601 date
+  expiration_date: z.string().nullable(),        // ISO 8601 date
+  last_changed_date: z.string().nullable(),      // ISO 8601 date
+  domain_age_years: z.number().nullable(),       // Age in years (decimal)
+  domain_age_days: z.number().int().nullable(),  // Age in days
+  registrar: z.string().nullable(),              // Registrar name
+  status: z.array(z.string()),                   // Domain status flags
+  rdap_available: z.boolean(),                   // Whether RDAP lookup succeeded
+  error: z.string().nullable(),                  // Error message if lookup failed
+});
+
+export type RdapSignals = z.infer<typeof RdapSignalsSchema>;
+
+// =============================================================================
 // Aggregated Signals Schema (output of collectSignals)
 // =============================================================================
 
@@ -207,6 +226,7 @@ export const DomainIntelSignalsSchema = z.object({
   forms: FormsSignalsSchema,
   third_party: ThirdPartySignalsSchema,
   content: ContentSignalsSchema,
+  rdap: RdapSignalsSchema.optional(), // Optional for backward compatibility
 });
 
 export type DomainIntelSignals = z.infer<typeof DomainIntelSignalsSchema>;
@@ -217,14 +237,13 @@ export type DomainIntelSignals = z.infer<typeof DomainIntelSignalsSchema>;
 
 export const RiskTypeScoresSchema = z.object({
   phishing: z.number().int().min(0).max(100),
-  fraud: z.number().int().min(0).max(100),
+  shell_company: z.number().int().min(0).max(100),
   compliance: z.number().int().min(0).max(100),
-  credit: z.number().int().min(0).max(100),
 });
 
 export type RiskTypeScores = z.infer<typeof RiskTypeScoresSchema>;
 
-export const RiskTypeSchema = z.enum(['phishing', 'fraud', 'compliance', 'credit']);
+export const RiskTypeSchema = z.enum(['phishing', 'shell_company', 'compliance']);
 export type RiskType = z.infer<typeof RiskTypeSchema>;
 
 // =============================================================================

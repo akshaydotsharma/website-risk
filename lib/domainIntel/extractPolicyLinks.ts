@@ -91,32 +91,39 @@ export interface ExtractPolicyLinksResult {
 const POLICY_KEYWORDS: Record<PolicyType, { anchor: RegExp; href: RegExp; content: RegExp }> = {
   privacy: {
     // Anchor: matches "Privacy", "Privacy Policy", "Data Protection", "Cookie Policy", "GDPR"
-    anchor: /privacy\s*(policy)?|data\s*protect|cookie\s*policy|gdpr/i,
-    // Href: matches common privacy policy URL patterns
-    href: /\/privacy|\/privacy-policy|\/privacypolicy|\/policies\/privacy|\/site-policy\/privacy/i,
-    // Content: keywords that should appear in a privacy policy page
-    content: /privacy\s*policy|personal\s*data|data\s*protection|gdpr|cookie\s*policy|information\s*we\s*collect/i,
+    // Multilingual: Portuguese (privacidade, política de privacidade), Spanish (privacidad, política de privacidad),
+    // French (confidentialité, politique de confidentialité), German (datenschutz), Italian (privacy, politica sulla privacy)
+    anchor: /privacy\s*(policy)?|data\s*protect|cookie\s*policy|gdpr|privacidade|política\s*de\s*privacidade|política\s*privacidade|privacidad|política\s*de\s*privacidad|confidentialité|politique\s*de\s*confidentialité|datenschutz|politica\s*sulla\s*privacy/i,
+    // Href: matches common privacy policy URL patterns (multilingual)
+    href: /\/privacy|\/privacy-policy|\/privacypolicy|\/policies\/privacy|\/site-policy\/privacy|\/politica-de-privacidade|\/privacidade|\/politique-de-confidentialite|\/datenschutz/i,
+    // Content: keywords that should appear in a privacy policy page (multilingual)
+    content: /privacy\s*policy|personal\s*data|data\s*protection|gdpr|cookie\s*policy|information\s*we\s*collect|privacidade|dados\s*pessoais|proteção\s*de\s*dados|privacidad|datos\s*personales|confidentialité|données\s*personnelles|datenschutz|personenbezogene\s*daten/i,
   },
   refund: {
     // Anchor: Must include "policy" context to avoid false positives like "fulfillment & returns"
     // Matches: "Refund Policy", "Return Policy", "Returns Policy", "Refund & Returns", "Exchange Policy", "Money Back", "Return & Exchange"
-    anchor: /refund\s*(policy|&\s*returns?)?|returns?\s*(policy|&\s*(refund|exchange))|return\s*(policy|&\s*exchange)|cancellation\s*policy|money\s*back|exchange\s*(policy|&\s*returns?)/i,
-    // Href: matches common refund/returns policy URL patterns
-    href: /\/refund(?:-policy|s?$|\/)|\/returns?-policy|\/return-policy|\/return-exchange|\/shipping-returns|\/policies\/refund|\/exchange-policy|\/pages\/refund|\/pages\/return/i,
-    // Content: keywords that should appear in a refund policy page (more specific)
-    content: /refund\s*policy|return\s*policy|cancellation\s*policy|money\s*back\s*guarantee|exchange\s*policy|eligible\s*for\s*refund|return\s*an?\s*item/i,
+    // Multilingual: Portuguese (devolução, reembolso, troca), Spanish (devolución, reembolso, cambio),
+    // French (remboursement, retour, échange), German (rückgabe, erstattung), Italian (rimborso, reso, cambio)
+    anchor: /refund\s*(policy|&\s*returns?)?|returns?\s*(policy|&\s*(refund|exchange))|return\s*(policy|&\s*exchange)|cancellation\s*policy|money\s*back|exchange\s*(policy|&\s*returns?)|devolução|devoluções|reembolso|troca|política\s*de\s*devolução|política\s*de\s*reembolso|devolución|política\s*de\s*devolución|cambio|remboursement|politique\s*de\s*retour|échange|rückgabe|erstattung|umtausch|rimborso|reso|cambio/i,
+    // Href: matches common refund/returns policy URL patterns (multilingual)
+    href: /\/refund(?:-policy|s?$|\/)|\/returns?-policy|\/return-policy|\/return-exchange|\/shipping-returns|\/policies\/refund|\/exchange-policy|\/pages\/refund|\/pages\/return|\/devolucao|\/devolução|\/reembolso|\/politica-de-devolucao|\/devolucion|\/reembolso|\/remboursement|\/politique-de-retour|\/rückgabe|\/erstattung|\/rimborso/i,
+    // Content: keywords that should appear in a refund policy page (multilingual)
+    content: /refund\s*policy|return\s*policy|cancellation\s*policy|money\s*back\s*guarantee|exchange\s*policy|eligible\s*for\s*refund|return\s*an?\s*item|devolução|reembolso|troca|direito\s*de\s*devolução|devolución|derecho\s*de\s*devolución|remboursement|droit\s*de\s*retour|rückgabe|erstattung|rimborso|diritto\s*di\s*reso/i,
   },
   terms: {
     // Anchor: matches "Terms", "Terms of Service", "Terms & Conditions", "T&C", "Legal"
-    anchor: /terms?\s*(of\s*service|and\s*conditions|of\s*use|\s*&\s*conditions)?|t\s*&\s*c|legal\s*terms/i,
-    // Href: matches common terms URL patterns
-    href: /\/terms|\/terms-of-service|\/terms-and-conditions|\/termsconditions|\/policies\/terms|\/tos(?:$|\/)|\/legal(?:$|\/terms)/i,
-    // Content: keywords that should appear in a terms page
-    content: /terms\s*(of\s*service|and\s*conditions|of\s*use)|user\s*agreement|acceptable\s*use|binding\s*agreement/i,
+    // Multilingual: Portuguese (termos, termos de uso, termos e condições), Spanish (términos, términos de uso),
+    // French (conditions, conditions générales), German (nutzungsbedingungen, AGB), Italian (termini, condizioni)
+    anchor: /terms?\s*(of\s*service|and\s*conditions|of\s*use|\s*&\s*conditions)?|t\s*&\s*c|legal\s*terms|termos\s*de\s*(uso|serviço)|termos\s*e\s*condições|términos\s*de\s*uso|términos\s*y\s*condiciones|conditions\s*générales|conditions\s*d'utilisation|nutzungsbedingungen|agb|termini\s*di\s*servizio|condizioni\s*generali/i,
+    // Href: matches common terms URL patterns (multilingual)
+    href: /\/terms|\/terms-of-service|\/terms-and-conditions|\/termsconditions|\/policies\/terms|\/tos(?:$|\/)|\/legal(?:$|\/terms)|\/termos-de-uso|\/termos|\/termos-e-condicoes|\/terminos-de-uso|\/terminos|\/conditions-generales|\/nutzungsbedingungen|\/agb|\/termini/i,
+    // Content: keywords that should appear in a terms page (multilingual)
+    content: /terms\s*(of\s*service|and\s*conditions|of\s*use)|user\s*agreement|acceptable\s*use|binding\s*agreement|termos\s*de\s*uso|termos\s*de\s*serviço|acordo\s*do\s*usuário|términos\s*de\s*uso|acuerdo\s*de\s*usuario|conditions\s*générales|accord\s*d'utilisateur|nutzungsbedingungen|nutzervereinbarung|termini\s*di\s*servizio|accordo\s*utente/i,
   },
 };
 
 // Common paths to check (per policy type)
+// Includes English, Portuguese, Spanish, French, German, Italian URLs
 const COMMON_PATHS: Record<PolicyType, string[]> = {
   privacy: [
     '/privacy',
@@ -126,6 +133,21 @@ const COMMON_PATHS: Record<PolicyType, string[]> = {
     '/legal/privacy',
     '/about/privacy',
     '/pages/privacy-policy',
+    // Portuguese
+    '/privacidade',
+    '/politica-de-privacidade',
+    '/politica-privacidade',
+    // Spanish
+    '/privacidad',
+    '/politica-de-privacidad',
+    // French
+    '/confidentialite',
+    '/politique-de-confidentialite',
+    // German
+    '/datenschutz',
+    // Italian
+    '/privacy',
+    '/politica-sulla-privacy',
   ],
   refund: [
     '/refund',
@@ -136,6 +158,28 @@ const COMMON_PATHS: Record<PolicyType, string[]> = {
     '/policies/refund-policy',
     '/pages/refund-policy',
     '/exchange-policy',
+    // Portuguese
+    '/devolucao',
+    '/devolução',
+    '/reembolso',
+    '/politica-de-devolucao',
+    '/trocas-e-devolucoes',
+    // Spanish
+    '/devolucion',
+    '/devolución',
+    '/politica-de-devolucion',
+    // French
+    '/remboursement',
+    '/politique-de-retour',
+    '/retour',
+    // German
+    '/rückgabe',
+    '/erstattung',
+    '/rucksendung',
+    // Italian
+    '/rimborso',
+    '/reso',
+    '/politica-di-reso',
   ],
   terms: [
     '/terms',
@@ -146,6 +190,26 @@ const COMMON_PATHS: Record<PolicyType, string[]> = {
     '/tos',
     '/legal/terms',
     '/pages/terms-of-service',
+    // Portuguese
+    '/termos',
+    '/termos-de-uso',
+    '/termos-de-servico',
+    '/termos-e-condicoes',
+    // Spanish
+    '/terminos',
+    '/terminos-de-uso',
+    '/terminos-y-condiciones',
+    // French
+    '/conditions',
+    '/conditions-generales',
+    '/conditions-utilisation',
+    // German
+    '/nutzungsbedingungen',
+    '/agb',
+    // Italian
+    '/termini',
+    '/termini-di-servizio',
+    '/condizioni-generali',
   ],
 };
 
@@ -1105,7 +1169,7 @@ async function matchLinksWithLlm(
     .map(t => `- ${policyTypeDescriptions[t]}`)
     .join('\n');
 
-  const prompt = `You are analyzing a website's links to find policy pages. The website may have typos, non-standard terminology, or non-English text.
+  const prompt = `You are analyzing a website's links to find policy pages. The website may be in ANY LANGUAGE (English, Portuguese, Spanish, French, German, Italian, etc.) and may have typos or non-standard terminology.
 
 I need to find these policy types:
 ${missingDescriptions}
@@ -1114,11 +1178,16 @@ Here are the links found on the page:
 ${linksList}
 
 For each policy type I'm looking for, identify the link number that BEST matches it semantically. Consider:
+- **Multilingual text**: Links may be in Portuguese (privacidade, devolução, termos), Spanish (privacidad, devolución, términos), French (confidentialité, remboursement, conditions), German (datenschutz, rückgabe, nutzungsbedingungen), Italian (privacy, rimborso, termini), or other languages
 - Typos and misspellings in link text
-- Variations in wording or phrasing
+- Variations in wording or phrasing across languages
 - Abbreviations and shorthand (e.g., "T&C", "ToS")
-- Non-English terms that may refer to policies
 - The URL path as a supporting hint
+
+**Examples of valid matches:**
+- Privacy: "Privacy Policy", "Política de Privacidade", "Privacidad", "Politique de Confidentialité", "Datenschutz"
+- Refund: "Return Policy", "Devolução", "Política de Devolución", "Remboursement", "Rückgabe", "Rimborso"
+- Terms: "Terms of Service", "Termos de Uso", "Términos", "Conditions Générales", "Nutzungsbedingungen"
 
 Respond in JSON format only:
 {
@@ -1127,7 +1196,7 @@ Respond in JSON format only:
     "refund": <link_number or null if not found>,
     "terms": <link_number or null if not found>
   },
-  "reasoning": "<brief explanation of matches found>"
+  "reasoning": "<brief explanation of matches found, including detected language>"
 }
 
 Only include policy types I asked about. Return null for a type if no good match exists.`;
@@ -1141,7 +1210,7 @@ Only include policy types I asked about. Return null for a type if no good match
       messages: [
         {
           role: 'user',
-          content: `You are an expert at identifying policy page links on websites, even when they use non-standard terminology, typos, or different languages. Respond only with valid JSON.
+          content: `You are an expert at identifying policy page links on websites across ALL languages. You excel at recognizing policy pages in English, Portuguese, Spanish, French, German, Italian, and other languages, even with typos or unusual terminology. Match links semantically by understanding what they mean, not just pattern matching.
 
 ${prompt}`,
         },

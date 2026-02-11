@@ -24,6 +24,15 @@ const config: Config = {
     "bg-caution/10",
     "bg-destructive/10",
     "border-caution/30",
+    // Surface tints
+    "bg-info-tint",
+    "bg-success-tint",
+    "bg-warning-tint",
+    "bg-danger-tint",
+    "bg-ai-tint",
+    "bg-risk-tint",
+    "bg-data-tint",
+    "bg-policy-tint",
   ],
   theme: {
     extend: {
@@ -74,11 +83,25 @@ const config: Config = {
           foreground: "hsl(var(--caution-foreground))",
         },
         link: "hsl(var(--link))",
+        // Surface tints for semantic states
+        "info-tint": "hsl(var(--info-tint))",
+        "success-tint": "hsl(var(--success-tint))",
+        "warning-tint": "hsl(var(--warning-tint))",
+        "danger-tint": "hsl(var(--danger-tint))",
+        "ai-tint": "hsl(var(--ai-tint))",
+        "risk-tint": "hsl(var(--risk-tint))",
+        "data-tint": "hsl(var(--data-tint))",
+        "policy-tint": "hsl(var(--policy-tint))",
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      boxShadow: {
+        sm: "var(--shadow-sm)",
+        md: "var(--shadow-md)",
+        lg: "var(--shadow-lg)",
       },
     },
   },

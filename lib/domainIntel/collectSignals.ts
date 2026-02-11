@@ -16,11 +16,14 @@ import {
   FormsSignals,
   ThirdPartySignals,
   ContentSignals,
+  RdapSignals,
   CollectSignalsOutput,
   FetchLogEntry,
   SignalLogEntry,
 } from './schemas';
 import { prisma } from '../prisma';
+import { fetchWithBrowser } from '../browser';
+import { lookupRdap } from './rdapLookup';
 
 // =============================================================================
 // Constants
@@ -43,7 +46,15 @@ const POLICY_PATHS = [
   '/returns',
   '/shipping',
   '/contact',
+  '/contact-us',
+  '/contactus',
+  '/pages/contact',
+  '/pages/contact-us',
   '/about',
+  '/about-us',
+  '/aboutus',
+  '/pages/about',
+  '/pages/about-us',
 ];
 
 // Urgency keywords regex
@@ -213,8 +224,9 @@ async function fetchWithLogging(
           redirect: 'manual',
           signal: controller.signal,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
           },
         });
 
@@ -949,6 +961,43 @@ function logContentSignals(signals: ContentSignals, ctx: FetchContext): void {
 }
 
 // =============================================================================
+// RDAP / Domain Registration Signals
+// =============================================================================
+
+async function collectRdapSignals(domain: string): Promise<RdapSignals> {
+  const result = await lookupRdap(domain);
+
+  return {
+    registration_date: result.registrationDate,
+    expiration_date: result.expirationDate,
+    last_changed_date: result.lastChangedDate,
+    domain_age_years: result.domainAgeYears,
+    domain_age_days: result.domainAgeDays,
+    registrar: result.registrar,
+    status: result.status,
+    rdap_available: result.error === null,
+    error: result.error,
+  };
+}
+
+function logRdapSignals(signals: RdapSignals, ctx: FetchContext): void {
+  addSignalLog(ctx, 'rdap', 'registration_date', signals.registration_date, 'info');
+  addSignalLog(ctx, 'rdap', 'expiration_date', signals.expiration_date, 'info');
+  addSignalLog(ctx, 'rdap', 'domain_age_years', signals.domain_age_years,
+    // Flag very new domains (< 1 year) as potential risk
+    signals.domain_age_years !== null && signals.domain_age_years < 1 ? 'warning' : 'info');
+  addSignalLog(ctx, 'rdap', 'domain_age_days', signals.domain_age_days,
+    // Flag extremely new domains (< 90 days) as higher risk
+    signals.domain_age_days !== null && signals.domain_age_days < 90 ? 'risk_hint' : 'info');
+  addSignalLog(ctx, 'rdap', 'registrar', signals.registrar, 'info');
+  addSignalLog(ctx, 'rdap', 'rdap_available', signals.rdap_available,
+    signals.rdap_available ? 'info' : 'warning');
+  if (signals.error) {
+    addSignalLog(ctx, 'rdap', 'error', signals.error, 'warning');
+  }
+}
+
+// =============================================================================
 // Database Persistence
 // =============================================================================
 
@@ -1186,7 +1235,8 @@ export async function collectSignals(
   };
 
   // Collect all signals
-  const { signals: reachability, body, headers } = await collectReachabilitySignals(normalizedUrl, ctx);
+  const { signals: reachability, body: initialBody, headers } = await collectReachabilitySignals(normalizedUrl, ctx);
+  let body = initialBody;
 
   // Save homepage HTML as artifact for use by other extractors (AI likelihood, SKU extraction, etc.)
   // This is critical because subsequent fetches may be blocked by bot protection (Cloudflare, etc.)
@@ -1215,6 +1265,40 @@ export async function collectSignals(
     reachability.bot_protection_detected = true;
   }
 
+  // Browser fallback: if bot protection detected or site appears unreachable despite DNS/TLS working,
+  // try fetching with headless browser which can bypass Cloudflare and similar protections
+  if (
+    reachability.bot_protection_detected ||
+    (!reachability.is_active && dnsSignals.dns_ok && tlsSignals.https_ok)
+  ) {
+    try {
+      const browserResult = await fetchWithBrowser(scanId, normalizedUrl, 'reachability_fallback', {
+        waitForNetworkIdle: false,
+        additionalWaitMs: 3000,
+        expandSections: false,
+        scrollToBottom: false,
+      });
+
+      // If browser fetch succeeded (got content and 2xx/3xx status), update reachability
+      if (browserResult.content && browserResult.statusCode && browserResult.statusCode >= 200 && browserResult.statusCode < 400) {
+        reachability.is_active = true;
+        reachability.status_code = browserResult.statusCode;
+        reachability.content_type = browserResult.contentType;
+        reachability.latency_ms = browserResult.fetchDurationMs;
+        reachability.bytes = browserResult.contentLength;
+        body = browserResult.content;
+
+        // Persist homepage artifact now that we have content from browser
+        const finalUrl = reachability.final_url || normalizedUrl;
+        const contentType = reachability.content_type || 'text/html';
+        await persistHomepageArtifact(scanId, finalUrl, body, contentType);
+      }
+    } catch (browserError) {
+      // Browser fallback failed, keep original reachability status
+      ctx.errors.push(`Browser fallback failed: ${browserError instanceof Error ? browserError.message : 'Unknown error'}`);
+    }
+  }
+
   // Log reachability signals after bot protection detection
   logReachabilitySignals(reachability, ctx);
 
@@ -1236,6 +1320,10 @@ export async function collectSignals(
   const contentSignals = collectContentSignals(body);
   logContentSignals(contentSignals, ctx);
 
+  // Collect RDAP / domain registration signals
+  const rdapSignals = await collectRdapSignals(targetDomain);
+  logRdapSignals(rdapSignals, ctx);
+
   // Assemble final signals object
   const signals: DomainIntelSignals = {
     schema_version: 1,
@@ -1252,6 +1340,7 @@ export async function collectSignals(
     forms: formsSignals,
     third_party: thirdPartySignals,
     content: contentSignals,
+    rdap: rdapSignals,
   };
 
   // Persist to database

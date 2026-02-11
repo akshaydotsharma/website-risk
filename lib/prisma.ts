@@ -16,19 +16,20 @@ function createPrismaClient() {
   const pool = new Pool({
     connectionString,
     connectionTimeoutMillis: 30000, // 30s for Neon cold starts
-    idleTimeoutMillis: 30000,
-    max: 10,
+    idleTimeoutMillis: 10000, // 10s - free connections faster
+    max: 18, // Increased from 10 for better concurrency
     statement_timeout: 60000, // 60s statement timeout
     query_timeout: 60000, // 60s query timeout
+    application_name: "website-risk-app",
   });
   const adapter = new PrismaPg(pool);
 
   return new PrismaClient({
     adapter,
-    log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"],
+    log: ["error", "warn"],
     transactionOptions: {
       maxWait: 10000, // 10s max wait to start transaction
-      timeout: 30000, // 30s transaction timeout
+      timeout: 60000, // 60s transaction timeout (increased from 30s)
     },
   });
 }

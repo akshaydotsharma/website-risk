@@ -3,9 +3,8 @@ export { collectSignals } from './collectSignals';
 export { scoreRisk, createFailedAssessment } from './scoreRisk';
 export {
   PHISHING_WEIGHTS,
-  FRAUD_WEIGHTS,
+  SHELL_COMPANY_WEIGHTS,
   COMPLIANCE_WEIGHTS,
-  CREDIT_WEIGHTS,
   CONFIDENCE_BASE,
   CONFIDENCE_ADJUSTMENTS,
 } from './riskWeightsV1';
@@ -28,10 +27,17 @@ export {
   type ExtractPolicyLinksResult,
 } from './extractPolicyLinks';
 
-import { prisma } from '../prisma';
 import { collectSignals } from './collectSignals';
 import { scoreRisk, createFailedAssessment } from './scoreRisk';
 import { DomainPolicy, RiskAssessment, CollectSignalsOutput } from './schemas';
+
+// Default crawling configuration - all domains use these thresholds
+const DEFAULT_CRAWL_CONFIG = {
+  allowSubdomains: true,
+  respectRobots: true,
+  maxPagesPerScan: 50,
+  crawlDelayMs: 1000,
+};
 
 /**
  * Main entry point for running the complete risk intelligence pipeline.
@@ -49,10 +55,9 @@ export async function runRiskIntelPipeline(
   error: string | null;
 }> {
   try {
-    // Extract domain from URL
-    let domain: string;
+    // Validate URL
     try {
-      domain = new URL(url.startsWith('http') ? url : `https://${url}`).hostname.toLowerCase();
+      new URL(url.startsWith('http') ? url : `https://${url}`);
     } catch {
       return {
         assessment: await createFailedAssessment(scanId, 'Invalid URL'),
@@ -61,29 +66,15 @@ export async function runRiskIntelPipeline(
       };
     }
 
-    // Check for custom configuration (optional - uses defaults if not found)
-    const authorizedDomain = await prisma.authorizedDomain.findFirst({
-      where: {
-        OR: [
-          { domain: domain },
-          // Check if the domain is a subdomain of an authorized domain with allowSubdomains
-          ...domain.split('.').slice(1).map((_, i, arr) => ({
-            domain: arr.slice(i).join('.'),
-            allowSubdomains: true,
-          })),
-        ],
-      },
-    });
-
-    // Build domain policy - use custom config if available, otherwise use safe defaults
+    // Build domain policy with default config
     const policy: DomainPolicy = {
-      isAuthorized: true, // Always authorized for risk scanning
-      allowSubdomains: authorizedDomain?.allowSubdomains ?? true,
-      respectRobots: authorizedDomain?.respectRobots ?? true,
+      isAuthorized: true,
+      allowSubdomains: DEFAULT_CRAWL_CONFIG.allowSubdomains,
+      respectRobots: DEFAULT_CRAWL_CONFIG.respectRobots,
       allowRobotsDisallowed: false,
-      maxPagesPerRun: authorizedDomain?.maxPagesPerScan ?? 50,
+      maxPagesPerRun: DEFAULT_CRAWL_CONFIG.maxPagesPerScan,
       maxDepth: 2,
-      crawlDelayMs: authorizedDomain?.crawlDelayMs ?? 1000,
+      crawlDelayMs: DEFAULT_CRAWL_CONFIG.crawlDelayMs,
       requestTimeoutMs: 8000,
     };
 

@@ -4,66 +4,106 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
+    /* App shell background - subtle neutral tint instead of pure white */
+    --background: 220 20% 97%;
     --foreground: 222.2 84% 4.9%;
+
+    /* Cards remain white for depth contrast */
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
+
+    /* Brand primary - orange */
+    --primary: 28 80% 52%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary and muted */
+    --secondary: 220 14% 96%;
     --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+
+    /* Accent for icons/section headers/chips */
+    --accent: 220 14% 96%;
     --accent-foreground: 222.2 47.4% 11.2%;
+
     --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 28 80% 52%;
     --radius: 0.5rem;
 
     /* Semantic status colors for scores and indicators */
-    --success: 142 76% 36%;
-    --success-foreground: 142 76% 96%;
-    --warning: 45 93% 47%;
-    --warning-foreground: 45 93% 97%;
-    --caution: 24 95% 53%;
-    --caution-foreground: 24 95% 97%;
-    --link: 217 91% 60%;
+    --success: 152 69% 40%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 38 92% 10%;
+    --caution: 25 95% 53%;
+    --caution-foreground: 0 0% 100%;
+    --link: 28 80% 52%;
+
+    /* Surface tints for semantic states (very subtle backgrounds) */
+    --info-tint: 28 70% 97%;
+    --success-tint: 152 60% 96%;
+    --warning-tint: 38 80% 96%;
+    --danger-tint: 0 80% 97%;
+    --ai-tint: 260 60% 97%;
+    --risk-tint: 25 80% 97%;
+    --data-tint: 200 70% 97%;
+    --policy-tint: 152 60% 97%;
+
+    /* Shadow scale */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.03), 0 1px 3px 0 rgb(0 0 0 / 0.05);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.05), 0 4px 6px -4px rgb(0 0 0 / 0.05);
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
+    --background: 222.2 47% 6%;
     --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
+    --card: 222.2 47% 9%;
     --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
+    --popover: 222.2 47% 9%;
     --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 28 85% 55%;
+    --primary-foreground: 0 0% 100%;
     --secondary: 217.2 32.6% 17.5%;
     --secondary-foreground: 210 40% 98%;
     --muted: 217.2 32.6% 17.5%;
     --muted-foreground: 215 20.2% 65.1%;
     --accent: 217.2 32.6% 17.5%;
     --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
+    --destructive: 0 62.8% 50%;
     --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
+    --border: 217.2 32.6% 20%;
     --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --ring: 28 85% 55%;
 
     /* Semantic status colors for scores and indicators */
-    --success: 142 71% 45%;
-    --success-foreground: 142 76% 10%;
-    --warning: 45 93% 58%;
-    --warning-foreground: 45 93% 10%;
-    --caution: 24 95% 58%;
-    --caution-foreground: 24 95% 10%;
-    --link: 217 91% 70%;
+    --success: 152 69% 45%;
+    --success-foreground: 152 76% 10%;
+    --warning: 38 93% 58%;
+    --warning-foreground: 38 93% 10%;
+    --caution: 25 95% 58%;
+    --caution-foreground: 25 95% 10%;
+    --link: 28 85% 60%;
+
+    /* Surface tints for semantic states (dark mode) */
+    --info-tint: 28 50% 12%;
+    --success-tint: 152 40% 12%;
+    --warning-tint: 38 40% 12%;
+    --danger-tint: 0 40% 12%;
+    --ai-tint: 260 40% 12%;
+    --risk-tint: 25 40% 12%;
+    --data-tint: 200 40% 12%;
+    --policy-tint: 152 40% 12%;
+
+    /* Shadow scale (dark) */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.2);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.3);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.4);
   }
 }
 
@@ -73,5 +113,167 @@
   }
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Respect reduced motion preferences globally */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Custom focus ring for accessibility - visible for keyboard, hidden for mouse */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  /* Smooth scrolling for anchors */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Custom scrollbar (subtle, non-obtrusive) */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.2);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.35);
+  }
+
+  /* Selection styling */
+  ::selection {
+    background: hsl(var(--primary) / 0.15);
+    color: hsl(var(--foreground));
+  }
+}
+
+/* Typography scale -- more expressive hierarchy */
+@layer components {
+  .text-page-title {
+    @apply text-2xl sm:text-3xl font-bold tracking-tight text-foreground;
+  }
+  .text-page-subtitle {
+    @apply text-sm sm:text-base text-muted-foreground leading-relaxed;
+  }
+  .text-section-title {
+    @apply text-lg font-semibold tracking-tight;
+  }
+  .text-helper {
+    @apply text-xs text-muted-foreground leading-relaxed;
+  }
+  .text-label {
+    @apply text-xs font-medium text-muted-foreground uppercase tracking-wider;
+  }
+}
+
+/* Transition utilities */
+@layer utilities {
+  .transition-default {
+    @apply transition-all duration-200 ease-out;
+  }
+  .transition-fast {
+    @apply transition-all duration-150 ease-out;
+  }
+  .transition-colors-fast {
+    @apply transition-colors duration-150 ease-out;
+  }
+}
+
+/* Skeleton loader animation */
+@layer components {
+  .skeleton {
+    @apply animate-pulse bg-muted rounded;
+  }
+  .skeleton-text {
+    @apply skeleton h-4 w-full;
+  }
+  .skeleton-title {
+    @apply skeleton h-6 w-3/4;
+  }
+  .skeleton-circle {
+    @apply skeleton rounded-full;
+  }
+}
+
+/* Card hover states */
+@layer components {
+  .card-interactive {
+    @apply transition-all duration-200 ease-out cursor-pointer;
+    @apply hover:shadow-md hover:border-primary/20 hover:-translate-y-px;
+    @apply active:translate-y-0 active:shadow-sm;
+  }
+}
+
+/* Table row hover with actions */
+@layer components {
+  .table-row-interactive {
+    @apply transition-fast;
+  }
+  .table-row-interactive:hover {
+    @apply bg-muted/50;
+  }
+  .table-row-interactive .row-actions {
+    @apply opacity-0 transition-opacity duration-150;
+  }
+  .table-row-interactive:hover .row-actions {
+    @apply opacity-100;
+  }
+}
+
+/* Score bar animation */
+@layer components {
+  .score-bar {
+    @apply h-full rounded-full transition-all duration-500 ease-out;
+  }
+}
+
+/* Empty state pattern */
+@layer components {
+  .empty-state {
+    @apply flex flex-col items-center justify-center py-12 px-6 text-center;
+  }
+  .empty-state-icon {
+    @apply w-14 h-14 rounded-2xl bg-muted/50 flex items-center justify-center mb-4;
+  }
+  .empty-state-title {
+    @apply text-sm font-medium text-foreground mb-1;
+  }
+  .empty-state-description {
+    @apply text-sm text-muted-foreground max-w-sm;
+  }
+}
+
+/* Gradient text utility */
+@layer utilities {
+  .text-gradient-primary {
+    @apply bg-gradient-to-r from-primary to-primary/70 bg-clip-text text-transparent;
+  }
+}
+
+/* Stat card utility */
+@layer components {
+  .stat-card {
+    @apply rounded-xl border bg-card p-4 sm:p-5 space-y-1;
+  }
+  .stat-card-label {
+    @apply text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5;
+  }
+  .stat-card-value {
+    @apply text-2xl sm:text-3xl font-bold tabular-nums tracking-tight;
   }
 }

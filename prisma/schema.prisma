@@ -18,7 +18,30 @@ model Domain {
   urlInputs     UrlInput[]
   scans         WebsiteScan[]
 
+  // Manual investigation fields
+  isManuallyRisky    Boolean             @default(false)
+  manualRiskNote     String?
+  manualRiskSetAt    DateTime?
+  investigationNotes InvestigationNote[]
+
   @@index([normalizedUrl])
+  @@index([isManuallyRisky])
+  @@index([lastCheckedAt(sort: Desc)]) // For pagination queries
+}
+
+model InvestigationNote {
+  id           String   @id @default(cuid())
+  domainId     String
+  content      String   @db.Text
+  type         String   @default("note") // "note" or "review"
+  riskDecision String?  // "risky" or "not_risky" - only for review type
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  domain       Domain   @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@index([domainId])
+  @@index([createdAt])
+  @@index([type])
 }
 
 model UrlInput {
@@ -57,6 +80,7 @@ model WebsiteScan {
   @@index([url])
   @@index([checkedAt])
   @@index([status])
+  @@index([domainId, status, createdAt(sort: Desc)]) // For filtered scan queries
 }
 
 model DomainDataPoint {
@@ -89,20 +113,7 @@ model ScanDataPoint {
 
   @@index([scanId])
   @@index([key])
-}
-
-model AuthorizedDomain {
-  id              String   @id @default(cuid())
-  domain          String   @unique
-  allowSubdomains Boolean  @default(true)
-  respectRobots   Boolean  @default(true)
-  maxPagesPerScan Int      @default(50)
-  crawlDelayMs    Int      @default(1000)
-  notes           String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  @@index([domain])
+  @@index([scanId, key]) // Composite index for data point lookups
 }
 
 model CrawlFetchLog {
@@ -128,6 +139,7 @@ model CrawlFetchLog {
   @@index([scanId])
   @@index([url])
   @@index([createdAt])
+  @@index([scanId, statusCode]) // For active status check queries
 }
 
 model UserPreference {
@@ -224,4 +236,58 @@ model PolicyLink {
   @@unique([scanId, policyType])
   @@index([scanId])
   @@index([url])
+}
+
+// =============================================================================
+// Homepage Similarity Compare Models
+// =============================================================================
+
+model HomepageArtifact {
+  id            String   @id @default(cuid())
+  url           String // input URL
+  finalUrl      String? // URL after redirects
+  domain        String
+  fetchMethod   String   @default("http") // "http" for MVP
+  statusCode    Int?
+  contentType   String?
+  ok            Boolean  @default(false)
+  redirectChain String?  @db.Text // JSON string[]
+  latencyMs     Int?
+  bytes         Int?
+  htmlSha256    String?
+  textSha256    String?
+  htmlSnippet   String?  @db.Text // truncated ~100KB
+  textSnippet   String?  @db.Text // truncated ~16KB
+  features      String?  @db.Text // JSON: extracted features
+  embedding     String?  @db.Text // JSON: embedding vector
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  comparisonsA HomepageComparison[] @relation("ArtifactA")
+  comparisonsB HomepageComparison[] @relation("ArtifactB")
+
+  @@index([domain])
+  @@index([url])
+  @@index([htmlSha256])
+}
+
+model HomepageComparison {
+  id           String   @id @default(cuid())
+  urlA         String
+  urlB         String
+  artifactAId  String
+  artifactBId  String
+  overallScore Int // 0-100
+  textScore    Int // 0-100
+  domScore     Int // 0-100
+  confidence   Int // 0-100
+  reasons      String?  @db.Text // JSON string[]
+  featureDiff  String?  @db.Text // JSON: stats/deltas for UI
+  createdAt    DateTime @default(now())
+
+  artifactA HomepageArtifact @relation("ArtifactA", fields: [artifactAId], references: [id], onDelete: Cascade)
+  artifactB HomepageArtifact @relation("ArtifactB", fields: [artifactBId], references: [id], onDelete: Cascade)
+
+  @@index([urlA])
+  @@index([urlB])
 }

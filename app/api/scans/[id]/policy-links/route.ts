@@ -2,13 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { isDomainAuthorized } from '@/lib/discovery';
 import { runPolicyLinksExtraction, DomainPolicy } from '@/lib/domainIntel';
-import { extractDomainFromInput } from '@/lib/utils';
 
 /**
  * POST /api/scans/[id]/policy-links
  *
  * Extracts and verifies policy links (privacy, refund, terms) for a scan.
- * Only runs for authorized domains.
  */
 export async function POST(
   request: NextRequest,
@@ -57,28 +55,18 @@ export async function POST(
       );
     }
 
-    // Extract domain from URL
-    const normalizedDomain = extractDomainFromInput(scan.url);
-
-    // Check authorization
-    const authResult = await isDomainAuthorized(normalizedDomain);
-
-    if (!authResult.authorized) {
-      return NextResponse.json(
-        { error: 'Domain not authorized for policy link extraction' },
-        { status: 403 }
-      );
-    }
+    // Get default crawl configuration
+    const authResult = await isDomainAuthorized(scan.url);
 
     // Build domain policy
     const policy: DomainPolicy = {
       isAuthorized: true,
-      allowSubdomains: authResult.config?.allowSubdomains ?? true,
-      respectRobots: authResult.config?.respectRobots ?? true,
+      allowSubdomains: authResult.config.allowSubdomains,
+      respectRobots: authResult.config.respectRobots,
       allowRobotsDisallowed: false,
-      maxPagesPerRun: authResult.config?.maxPagesPerScan ?? 50,
+      maxPagesPerRun: authResult.config.maxPagesPerScan,
       maxDepth: 2,
-      crawlDelayMs: authResult.config?.crawlDelayMs ?? 1000,
+      crawlDelayMs: authResult.config.crawlDelayMs,
       requestTimeoutMs: 8000,
     };
 

@@ -409,7 +409,7 @@ async function isUrlAccessible(url: string): Promise<boolean> {
       method: 'GET',
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       },
       redirect: 'follow',
     });
@@ -473,7 +473,7 @@ async function fetchSitemapUrlsFromRobots(baseUrl: string): Promise<string[]> {
     const response = await fetch(robotsUrl, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       },
     });
 
@@ -512,7 +512,7 @@ async function fetchContactUrlsFromSitemap(sitemapUrl: string, baseUrl: string):
     const response = await fetch(sitemapUrl, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       },
     });
 
@@ -717,7 +717,7 @@ async function fetchAndCleanPage(url: string, useBrowser: boolean = false): Prom
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       },
     });
 
@@ -1202,7 +1202,7 @@ async function checkRobotsTxt(baseUrl: string): Promise<boolean> {
       method: "HEAD",
       signal: controller.signal,
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
       },
     });
 
@@ -1214,7 +1214,7 @@ async function checkRobotsTxt(baseUrl: string): Promise<boolean> {
       const contentResponse = await fetch(`${baseUrl}/robots.txt`, {
         signal: AbortSignal.timeout(5000),
         headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         },
       });
       const content = await contentResponse.text();
@@ -1239,7 +1239,7 @@ async function checkSitemap(baseUrl: string): Promise<boolean> {
       method: "GET",
       signal: controller.signal,
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
       },
     });
 
@@ -1276,7 +1276,7 @@ async function checkFavicon(baseUrl: string, headHtml: string): Promise<boolean>
       method: "HEAD",
       signal: controller.signal,
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
       },
     });
 
@@ -1731,7 +1731,7 @@ async function getOrFetchHomepageArtifacts(
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
       },
     });
 
@@ -1764,6 +1764,40 @@ async function getOrFetchHomepageArtifacts(
       headers,
     };
   } catch (error) {
+    // Check for SSL errors (weak DH key, cert issues, etc.) and fallback to browser
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isSSLError = errorMessage.includes('SSL') ||
+                       errorMessage.includes('TLS') ||
+                       errorMessage.includes('certificate') ||
+                       (error as NodeJS.ErrnoException)?.code?.includes('SSL');
+
+    if (isSSLError) {
+      console.warn(`SSL error fetching homepage, falling back to browser: ${errorMessage}`);
+      try {
+        const browserResult = await fetchWithBrowser(scanId, url, 'ai_analysis_fallback', {
+          waitForNetworkIdle: false,
+          additionalWaitMs: 2000,
+          expandSections: false,
+        });
+
+        if (browserResult.content) {
+          const html = browserResult.content;
+          const text = extractTextContent(html);
+          const contentType = browserResult.contentType || undefined;
+
+          await storeHomepageArtifacts(scanId, url, html, text, contentType);
+
+          return {
+            htmlSnippet: html.substring(0, MAX_HTML_SNIPPET_SIZE),
+            textSnippet: text.substring(0, MAX_TEXT_SNIPPET_SIZE),
+            headHtml: extractHeadHtml(html),
+          };
+        }
+      } catch (browserError) {
+        console.error("Browser fallback also failed:", browserError);
+      }
+    }
+
     console.error("Error fetching homepage for AI analysis:", error);
     return null;
   }

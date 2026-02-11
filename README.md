@@ -26,6 +26,16 @@ A web application for scanning websites to extract intelligence signals for risk
 - **Homepage SKU Extraction**: Detects products/prices on e-commerce homepages with sale price detection
 - **AI-Generated Likelihood Detection**: Heuristic-based estimation of whether homepage content appears AI-generated
 
+### Homepage Similarity Compare
+- **Dual-URL Comparison**: Compare two homepages to detect clones, template reuse, or brand impersonation
+- **Text Similarity Scoring**: TF-IDF vectorization and cosine similarity for semantic content analysis
+- **DOM Structure Comparison**: Tag distribution, heading patterns, block structure, and element counts
+- **Composite Scoring**: 65% text similarity + 35% DOM structure = overall similarity (0-100)
+- **Confidence Metrics**: Reliability indicator based on page quality and data completeness
+- **Detailed Breakdown**: Side-by-side stats, heading overlap, tag count differences, and 5 concise reasons
+- **Authorization-Aware**: Only compares domains that are both in the authorized domains list
+- **Robots.txt Compliance**: Respects crawling policies for both URLs
+
 ### Technical Features
 - **Browser-Based Fetching**: Playwright-powered fetching for JS-heavy sites and bot protection bypass
 - **Authorized Domains**: Security constraints for crawling scope
@@ -86,6 +96,31 @@ Detailed signal tracking for risk analysis:
 - `name`: Signal name
 - `valueType`: Type of value (number, string, boolean, json)
 - `severity`: Signal severity (info, warning, risk_hint)
+
+### HomepageArtifact
+Stores fetched homepage data for comparison feature:
+- `id`: Unique identifier
+- `url`: Original input URL
+- `finalUrl`: URL after following redirects
+- `domain`: Normalized domain
+- `fetchMethod`: "http" or "chromium"
+- `statusCode`: HTTP status code
+- `ok`: Whether fetch was successful
+- `htmlSnippet`, `textSnippet`: First 20KB of content
+- `features`: JSON-encoded homepage features (word count, tag counts, headings, etc.)
+- `embedding`: JSON-encoded text signature
+
+### HomepageComparison
+Stores homepage comparison results:
+- `id`: Unique identifier
+- `urlA`, `urlB`: Input URLs
+- `artifactAId`, `artifactBId`: Foreign keys to HomepageArtifact
+- `overallScore`: Composite similarity score (0-100)
+- `textScore`: Text similarity score (0-100)
+- `domScore`: DOM structure similarity score (0-100)
+- `confidence`: Confidence score (0-90)
+- `reasons`: JSON-encoded array of explanation strings
+- `featureDiff`: JSON-encoded side-by-side comparison data
 
 ## Getting Started
 
@@ -171,6 +206,19 @@ lib/domainIntel/
 ├── extractHomepageSkus.ts # E-commerce product extraction
 ├── extractPolicyLinks.ts  # Policy page discovery
 └── schemas.ts            # TypeScript types and Zod schemas
+```
+
+### Homepage Comparison Module
+
+The homepage similarity comparison feature lives in `lib/compare/`:
+
+```
+lib/compare/
+├── index.ts                     # Main entry point (runHomepageComparison)
+├── schemas.ts                   # TypeScript types and Zod schemas
+├── extractHomepageArtifact.ts   # URL normalization, authorization, fetching, feature extraction
+├── getTextEmbedding.ts          # TF-IDF vectorization and text similarity scoring
+└── scoreSimilarity.ts           # DOM similarity, overall scoring, reason generation
 ```
 
 ### Extensibility
@@ -405,12 +453,19 @@ website-risk/
 │   │   │   │   ├── status/         # Scan status endpoint
 │   │   │   │   └── rescan/         # Rescan endpoint
 │   │   │   └── route.ts            # Create/list scans
+│   │   ├── compare/            # Homepage comparison routes
+│   │   │   ├── [id]/           # Get comparison result
+│   │   │   └── route.ts        # Create comparison
 │   │   ├── domains/            # Domain management
 │   │   ├── authorized-domains/ # Authorization management
 │   │   └── preferences/        # User preferences
 │   ├── scans/                  # Scan pages
 │   │   ├── [id]/               # Individual scan detail
 │   │   └── page.tsx            # Scan history
+│   ├── compare/                # Homepage comparison pages
+│   │   ├── [id]/               # Comparison result page
+│   │   ├── compare-form.tsx    # Input form component
+│   │   └── page.tsx            # Comparison input page
 │   ├── domains/                # Domain detail pages
 │   ├── settings/               # Settings page
 │   ├── layout.tsx              # Root layout
@@ -426,6 +481,12 @@ website-risk/
 │   │   ├── extractPolicyLinks.ts   # Policy page discovery
 │   │   ├── schemas.ts          # Zod schemas
 │   │   └── index.ts            # Module exports
+│   ├── compare/                # Homepage comparison module
+│   │   ├── schemas.ts          # Types and Zod schemas
+│   │   ├── extractHomepageArtifact.ts  # Fetch and parse homepage
+│   │   ├── getTextEmbedding.ts # TF-IDF text similarity
+│   │   ├── scoreSimilarity.ts  # DOM and overall scoring
+│   │   └── index.ts            # Main comparison orchestration
 │   ├── browser.ts              # Playwright browser utilities
 │   ├── prisma.ts               # Prisma client
 │   ├── extractors.ts           # AI data point extractors
@@ -662,6 +723,206 @@ Browser-based extraction is automatically used when:
 - **Robots.txt Respected**: Honors robots.txt by default
 - **Rate Limited**: Configurable crawl delay between requests
 - **Cached Artifacts**: Reuses homepage HTML across extractors to minimize requests
+
+## Homepage Similarity Compare
+
+The Homepage Similarity Compare feature analyzes two homepages to detect similarity, potentially identifying clones, template reuse, or brand impersonation attempts.
+
+### How It Works
+
+The comparison pipeline consists of several stages:
+
+1. **URL Normalization & Authorization**
+   - Normalizes both input URLs to canonical form
+   - Extracts root domains and checks authorization
+   - **Only proceeds if both domains are in the authorized domains list**
+   - Rejects comparison if either domain is unauthorized
+
+2. **Robots.txt Compliance Check**
+   - Fetches and parses `robots.txt` for both domains
+   - Checks if homepage crawling is allowed
+   - Respects `User-agent: *` and `Disallow` rules
+   - Aborts fetch if disallowed
+
+3. **Homepage Artifact Extraction**
+   - Fetches homepage HTML via HTTP GET (with bot challenge detection)
+   - Falls back to Playwright browser rendering if blocked
+   - Extracts text content (visible text only, no scripts/styles)
+   - Parses DOM structure (tag counts, depths, headings, forms, buttons, links)
+   - Stores artifacts in database for reuse
+
+4. **Text Similarity Calculation (65% weight)**
+   - **Algorithm**: TF-IDF (Term Frequency-Inverse Document Frequency) vectorization
+   - **Process**:
+     - Tokenizes text into words (lowercase, removes punctuation, filters short words)
+     - Calculates term frequency (TF) for each word in each document
+     - Calculates inverse document frequency (IDF) to weight important terms
+     - Builds TF-IDF vectors for both texts
+     - Computes cosine similarity between vectors
+   - **Output**: 0-100 score representing semantic text similarity
+
+5. **DOM Structure Similarity (35% weight)**
+   - **Components**:
+     - **Tag Distribution (40%)**: Cosine similarity of normalized tag count vectors
+     - **Structure Metrics (30%)**: Cosine similarity of word count, link count, heading counts, form/button counts, DOM depth
+     - **Block Structure (20%)**: Jaccard similarity of top-level body children sequence
+     - **Heading Similarity (10%)**: Jaccard similarity of heading text content
+   - **Output**: 0-100 score representing structural similarity
+
+6. **Overall Similarity Score**
+   - Formula: `(text_score × 0.65) + (dom_score × 0.35)`
+   - Captures both content and layout similarities
+   - Rounded to integer 0-100
+
+7. **Confidence Calculation**
+   - Base confidence: 80
+   - Penalties applied for:
+     - Robots.txt disallow (-50)
+     - Bot challenge detected (-40)
+     - Non-HTML content (-60)
+     - Low word count < 150 words (-15)
+     - Missing text content (-20)
+   - Clamped to 0-90 (never exceeds 90)
+
+8. **Reason Generation**
+   - Generates 5 concise reasons explaining the score
+   - Covers text similarity, DOM structure, heading patterns, element distribution, and confidence factors
+   - Human-readable explanations for transparency
+
+### Algorithms
+
+#### TF-IDF Text Similarity
+
+**TF-IDF** (Term Frequency-Inverse Document Frequency) is a numerical statistic that reflects how important a word is to a document:
+
+```
+TF(term, doc) = count(term in doc) / total words in doc
+IDF(term) = log((num_docs + 1) / (docs_with_term + 1)) + 1
+TF-IDF(term, doc) = TF(term, doc) × IDF(term)
+```
+
+For two documents, we:
+1. Build TF-IDF vectors for both texts using the combined vocabulary
+2. Calculate cosine similarity between the vectors
+
+**Cosine Similarity**:
+```
+similarity = (A · B) / (||A|| × ||B||)
+```
+where `A · B` is the dot product and `||A||` is the magnitude of vector A.
+
+**Why TF-IDF?**
+- No external API dependencies (runs locally)
+- Fast computation for short documents
+- Captures semantic similarity through word importance weighting
+- Well-established algorithm with predictable behavior
+
+#### Jaccard Similarity
+
+Used for comparing sets (headings, block structure):
+
+```
+J(A, B) = |A ∩ B| / |A ∪ B|
+```
+
+Returns value between 0 (no overlap) and 1 (identical sets).
+
+### Content Fetching
+
+The feature uses the same robust fetching infrastructure as other scanning features:
+
+- **HTTP Fetching**: Primary method using native `fetch()`
+- **Bot Challenge Detection**: Detects Cloudflare, Vercel, and generic challenges
+- **Browser Fallback**: Automatically switches to Playwright when challenges detected
+- **Redirect Following**: Captures full redirect chain and uses final URL
+- **Error Handling**: Gracefully handles timeouts, DNS failures, and network errors
+
+### API Endpoints
+
+#### POST /api/compare
+Create a new homepage comparison.
+
+**Request body:**
+```json
+{
+  "urlA": "https://example.com",
+  "urlB": "https://example-clone.com"
+}
+```
+
+**Response:**
+```json
+{
+  "comparisonId": "clxyz123...",
+  "overallScore": 78,
+  "textScore": 82,
+  "domScore": 71,
+  "confidence": 75,
+  "reasons": [
+    "Homepage text content is semantically similar",
+    "HTML structure shows moderate similarity",
+    "Similar section headings/H1-H2 patterns detected",
+    "Similar distribution of forms, buttons, and links",
+    "Moderate overall similarity - possibly same industry or framework"
+  ]
+}
+```
+
+#### GET /api/compare/[id]
+Retrieve an existing comparison result.
+
+**Response:** Same as POST, plus:
+```json
+{
+  "featureDiff": {
+    "statsA": { "wordCount": 450, "h1Count": 1, ... },
+    "statsB": { "wordCount": 420, "h2Count": 3, ... },
+    "headingOverlap": 0.65,
+    "commonHeadings": ["Welcome", "Features", "Contact"],
+    "tagCountDiff": { "div": { "a": 120, "b": 115, "diff": 5 }, ... }
+  },
+  "artifactA": { "url": "...", "features": {...}, ... },
+  "artifactB": { "url": "...", "features": {...}, ... }
+}
+```
+
+### Database Schema
+
+#### HomepageArtifact
+Stores fetched homepage data for reuse:
+- `url`, `finalUrl`, `domain`: URL information
+- `fetchMethod`: `"http"` or `"chromium"`
+- `statusCode`, `contentType`, `ok`: HTTP response info
+- `redirectChain`: JSON array of redirect URLs
+- `htmlSha256`, `textSha256`: Content hashes for deduplication
+- `htmlSnippet`, `textSnippet`: First 20KB of content
+- `features`: JSON-encoded homepage features (word count, tag counts, headings, etc.)
+- `embedding`: JSON-encoded text signature (not used for comparison, stored for future use)
+
+#### HomepageComparison
+Stores comparison results:
+- `urlA`, `urlB`: Input URLs
+- `artifactAId`, `artifactBId`: Foreign keys to artifacts
+- `overallScore`, `textScore`, `domScore`: Similarity scores (0-100)
+- `confidence`: Confidence score (0-90)
+- `reasons`: JSON array of explanation strings
+- `featureDiff`: JSON-encoded side-by-side stats and differences
+
+### Use Cases
+
+- **Brand Protection**: Detect phishing sites cloning legitimate brands
+- **Template Detection**: Identify sites built from the same template
+- **Content Theft**: Find unauthorized copies of website content
+- **Competitor Analysis**: Compare homepage layouts and content strategies
+- **Quality Assurance**: Verify staging vs production homepage consistency
+
+### Limitations
+
+- Only compares homepages (not full sites)
+- Requires both domains to be authorized
+- Text similarity is language-sensitive (works best with English)
+- DOM structure comparison may produce false positives for simple layouts
+- Heavy JS-rendered sites may require browser fetching (slower)
 
 ## Future Enhancements
 

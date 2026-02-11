@@ -2,10 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Globe, CheckCircle, XCircle, Clock, ArrowRight, Loader2, Shield } from "lucide-react";
+import { Search, Globe, CheckCircle, XCircle, Clock, ArrowRight, Loader2 } from "lucide-react";
 import { cn, cleanUrl } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
-import { Switch } from "@/components/ui/switch";
 
 interface SearchResult {
   id: string;
@@ -25,7 +24,6 @@ export function DomainSearch() {
   const [isLoading, setIsLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [addToAuthorizedList, setAddToAuthorizedList] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -119,7 +117,7 @@ export function DomainSearch() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ url: normalizedUrl, addToAuthorizedList }),
+        body: JSON.stringify({ url: normalizedUrl }),
       });
 
       const data = await response.json();
@@ -141,14 +139,14 @@ export function DomainSearch() {
   };
 
   return (
-    <div ref={containerRef} className="relative w-full max-w-md">
+    <div ref={containerRef} className="relative w-full max-w-md" role="combobox" aria-expanded={isOpen} aria-haspopup="listbox">
       {/* Search Input */}
       <div className="relative group">
         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
           {isLoading || isScanning ? (
-            <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
+            <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" aria-hidden="true" />
           ) : (
-            <Search className="h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
+            <Search className="h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors duration-150" aria-hidden="true" />
           )}
         </div>
         <input
@@ -165,9 +163,11 @@ export function DomainSearch() {
           onKeyDown={handleKeyDown}
           placeholder="Search or scan a website..."
           disabled={isScanning}
+          aria-label="Search or scan a website"
+          aria-autocomplete="list"
           className={cn(
             "w-full h-10 pl-10 pr-4 rounded-xl border bg-muted/50",
-            "text-sm placeholder:text-muted-foreground",
+            "text-sm placeholder:text-muted-foreground/60",
             "focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary focus:bg-background",
             "transition-all duration-200",
             isScanning && "opacity-70 cursor-not-allowed"
@@ -180,9 +180,10 @@ export function DomainSearch() {
               setResults([]);
               inputRef.current?.focus();
             }}
-            className="absolute inset-y-0 right-0 pr-3 flex items-center text-muted-foreground hover:text-foreground"
+            aria-label="Clear search"
+            className="absolute inset-y-0 right-0 pr-3 flex items-center text-muted-foreground hover:text-foreground transition-colors duration-150"
           >
-            <XCircle className="h-4 w-4" />
+            <XCircle className="h-4 w-4" aria-hidden="true" />
           </button>
         )}
       </div>
@@ -256,21 +257,6 @@ export function DomainSearch() {
           {/* New Scan Option */}
           {query.length >= 2 && (
             <div className="border-t">
-              {/* Add to Authorized List Toggle */}
-              <div
-                className="px-3 py-2 flex items-center justify-between border-b bg-muted/30"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex items-center gap-2">
-                  <Shield className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground">Add to authorized list</span>
-                </div>
-                <Switch
-                  checked={addToAuthorizedList}
-                  onCheckedChange={setAddToAuthorizedList}
-                  className="scale-75"
-                />
-              </div>
               <button
                 onClick={handleNewScan}
                 onMouseEnter={() => setSelectedIndex(results.length)}
@@ -285,7 +271,7 @@ export function DomainSearch() {
                 <div className="flex-1">
                   <span className="text-sm font-medium">Scan &quot;{query}&quot;</span>
                   <p className="text-xs text-muted-foreground">
-                    {addToAuthorizedList ? "Add to authorized list & start scan" : "Start a new website scan"}
+                    Start a new website scan
                   </p>
                 </div>
                 <ArrowRight className="h-4 w-4 text-muted-foreground" />

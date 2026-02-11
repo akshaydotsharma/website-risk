@@ -8,7 +8,7 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-lg border bg-card text-card-foreground shadow-sm",
+      "rounded-xl border bg-card text-card-foreground shadow-sm transition-shadow duration-200",
       className
     )}
     {...props}
@@ -16,16 +16,36 @@ const Card = React.forwardRef<
 ));
 Card.displayName = "Card";
 
-const CardHeader = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    className={cn("flex flex-col space-y-1.5 p-6", className)}
-    {...props}
-  />
-));
+interface CardHeaderProps extends React.HTMLAttributes<HTMLDivElement> {
+  tint?: "default" | "ai" | "risk" | "data" | "policy" | "info" | "success" | "warning";
+}
+
+const CardHeader = React.forwardRef<HTMLDivElement, CardHeaderProps>(
+  ({ className, tint, ...props }, ref) => {
+    const tintClasses = {
+      default: "",
+      ai: "bg-ai-tint rounded-t-xl -mx-px -mt-px px-[calc(1.5rem+1px)] pt-[calc(1.5rem+1px)]",
+      risk: "bg-risk-tint rounded-t-xl -mx-px -mt-px px-[calc(1.5rem+1px)] pt-[calc(1.5rem+1px)]",
+      data: "bg-data-tint rounded-t-xl -mx-px -mt-px px-[calc(1.5rem+1px)] pt-[calc(1.5rem+1px)]",
+      policy: "bg-policy-tint rounded-t-xl -mx-px -mt-px px-[calc(1.5rem+1px)] pt-[calc(1.5rem+1px)]",
+      info: "bg-info-tint rounded-t-xl -mx-px -mt-px px-[calc(1.5rem+1px)] pt-[calc(1.5rem+1px)]",
+      success: "bg-success-tint rounded-t-xl -mx-px -mt-px px-[calc(1.5rem+1px)] pt-[calc(1.5rem+1px)]",
+      warning: "bg-warning-tint rounded-t-xl -mx-px -mt-px px-[calc(1.5rem+1px)] pt-[calc(1.5rem+1px)]",
+    };
+
+    return (
+      <div
+        ref={ref}
+        className={cn(
+          "flex flex-col space-y-1.5 p-6",
+          tint && tintClasses[tint],
+          className
+        )}
+        {...props}
+      />
+    );
+  }
+);
 CardHeader.displayName = "CardHeader";
 
 const CardTitle = React.forwardRef<
@@ -35,7 +55,7 @@ const CardTitle = React.forwardRef<
   <h3
     ref={ref}
     className={cn(
-      "text-2xl font-semibold leading-none tracking-tight",
+      "text-lg font-semibold leading-none tracking-tight",
       className
     )}
     {...props}
@@ -49,7 +69,7 @@ const CardDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-sm text-muted-foreground", className)}
+    className={cn("text-sm text-muted-foreground leading-relaxed", className)}
     {...props}
   />
 ));

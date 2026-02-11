@@ -7,10 +7,9 @@ import { runRiskIntelPipeline } from "@/lib/domainIntel";
  *
  * Run the domain risk intelligence pipeline for an existing scan.
  * This endpoint will:
- * 1. Verify the domain is authorized in AuthorizedDomain
- * 2. Collect domain intelligence signals (HTTP, DNS, TLS, etc.)
- * 3. Compute risk scores (phishing, fraud, compliance, credit)
- * 4. Persist results to ScanDataPoint, DomainDataPoint, SignalLog, and CrawlFetchLog
+ * 1. Collect domain intelligence signals (HTTP, DNS, TLS, etc.)
+ * 2. Compute risk scores (phishing, shell_company, compliance)
+ * 3. Persist results to ScanDataPoint, DomainDataPoint, SignalLog, and CrawlFetchLog
  *
  * Request body (optional):
  * - force: boolean - Re-run even if assessment already exists

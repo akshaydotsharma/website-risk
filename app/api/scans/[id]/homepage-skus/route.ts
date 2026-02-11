@@ -285,36 +285,15 @@ export async function POST(
       );
     }
 
-    // Check authorization
-    const authorizedDomain = await prisma.authorizedDomain.findFirst({
-      where: {
-        OR: [
-          { domain: domain.normalizedUrl },
-          // Check if subdomain of authorized domain
-          ...domain.normalizedUrl.split('.').slice(1).map((_, i, arr) => ({
-            domain: arr.slice(i).join('.'),
-            allowSubdomains: true,
-          })),
-        ],
-      },
-    });
-
-    if (!authorizedDomain) {
-      return NextResponse.json(
-        { error: "Domain not authorized for SKU extraction" },
-        { status: 403 }
-      );
-    }
-
-    // Build policy
+    // Build policy with default config (all domains are authorized)
     const policy: DomainPolicy = {
       isAuthorized: true,
-      allowSubdomains: authorizedDomain.allowSubdomains,
-      respectRobots: authorizedDomain.respectRobots,
+      allowSubdomains: true,
+      respectRobots: true,
       allowRobotsDisallowed: false,
-      maxPagesPerRun: authorizedDomain.maxPagesPerScan,
+      maxPagesPerRun: 50,
       maxDepth: 2,
-      crawlDelayMs: authorizedDomain.crawlDelayMs,
+      crawlDelayMs: 1000,
       requestTimeoutMs: 8000,
     };
 

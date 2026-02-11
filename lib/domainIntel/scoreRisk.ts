@@ -7,9 +7,9 @@ import {
 } from './schemas';
 import {
   PHISHING_WEIGHTS,
-  FRAUD_WEIGHTS,
+  SHELL_COMPANY_WEIGHTS,
   COMPLIANCE_WEIGHTS,
-  CREDIT_WEIGHTS,
+  GENERIC_EMAIL_PROVIDERS,
   CONFIDENCE_BASE,
   CONFIDENCE_ADJUSTMENTS,
   CONFIDENCE_MIN,
@@ -77,6 +77,83 @@ interface ExtractedContactDetails {
     other: string[];
   };
   notes: string | null;
+}
+
+// Interface for AI-Generated Likelihood data point (from extractors.ts)
+interface AiGeneratedLikelihood {
+  ai_generated_score: number;
+  confidence: number;
+  subscores: {
+    content: number;
+    markup: number;
+    infrastructure: number;
+  };
+  signals: {
+    generator_meta: string | null;
+    tech_hints: string[];
+    ai_markers: string[];
+    suspicious_content_patterns?: string[];
+    infrastructure: {
+      has_robots_txt: boolean;
+      has_sitemap: boolean;
+      has_favicon: boolean;
+      free_hosting: string | null;
+      seo_score: number;
+      is_boilerplate: boolean;
+    };
+  };
+  reasons: string[];
+  notes: string | null;
+}
+
+/**
+ * Fetch AI-generated likelihood data from the database
+ */
+async function getAiGeneratedLikelihood(scanId: string): Promise<AiGeneratedLikelihood | null> {
+  try {
+    const dataPoint = await prisma.scanDataPoint.findFirst({
+      where: {
+        scanId,
+        key: 'ai_generated_likelihood',
+      },
+    });
+
+    if (!dataPoint) return null;
+
+    return JSON.parse(dataPoint.value) as AiGeneratedLikelihood;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if business uses only generic email providers (gmail, outlook, etc.)
+ */
+function hasGenericBusinessEmail(
+  emails: string[] | undefined,
+  domain: string
+): boolean {
+  if (!emails || emails.length === 0) return false;
+
+  // Check if any email uses the company domain
+  const hasCustomDomainEmail = emails.some(email => {
+    const emailDomain = email.split('@')[1]?.toLowerCase();
+    if (!emailDomain) return false;
+    // Allow exact match or subdomains
+    return emailDomain === domain ||
+      emailDomain.endsWith('.' + domain) ||
+      domain.endsWith('.' + emailDomain);
+  });
+
+  // If no custom domain email, check if any are from generic providers
+  if (!hasCustomDomainEmail) {
+    return emails.some(email => {
+      const emailDomain = email.split('@')[1]?.toLowerCase();
+      return emailDomain && GENERIC_EMAIL_PROVIDERS.includes(emailDomain as any);
+    });
+  }
+
+  return false;
 }
 
 /**
@@ -289,155 +366,331 @@ function calculatePhishingScore(signals: DomainIntelSignals): ScoreResult {
 }
 
 // =============================================================================
-// Fraud Score Calculation
+// Shell Company Score Calculation
 // =============================================================================
 
-function calculateFraudScore(
+function calculateShellCompanyScore(
   signals: DomainIntelSignals,
   extractedContactDetails: ExtractedContactDetails | null,
-  verifiedPolicyLinks: VerifiedPolicyLinks
+  aiGeneratedLikelihood: AiGeneratedLikelihood | null
 ): ScoreResult {
   let score = 0;
   const applications: WeightApplication[] = [];
 
-  // STRONG: Site inactive
-  if (!signals.reachability.is_active) {
-    score += FRAUD_WEIGHTS.site_inactive;
+  // =============================================================================
+  // DOMAIN AGE SIGNALS (from RDAP - mutually exclusive tiers)
+  // =============================================================================
+  const domainAgeDays = signals.rdap?.domain_age_days;
+  if (domainAgeDays !== null && domainAgeDays !== undefined) {
+    if (domainAgeDays < 30) {
+      score += SHELL_COMPANY_WEIGHTS.domain_age_under_30_days;
+      applications.push({
+        weight_key: 'domain_age_under_30_days',
+        points: SHELL_COMPANY_WEIGHTS.domain_age_under_30_days,
+        reason: `Domain is extremely new (${domainAgeDays} days old)`,
+      });
+    } else if (domainAgeDays < 90) {
+      score += SHELL_COMPANY_WEIGHTS.domain_age_under_90_days;
+      applications.push({
+        weight_key: 'domain_age_under_90_days',
+        points: SHELL_COMPANY_WEIGHTS.domain_age_under_90_days,
+        reason: `Domain is very new (${domainAgeDays} days old)`,
+      });
+    } else if (domainAgeDays < 180) {
+      score += SHELL_COMPANY_WEIGHTS.domain_age_under_180_days;
+      applications.push({
+        weight_key: 'domain_age_under_180_days',
+        points: SHELL_COMPANY_WEIGHTS.domain_age_under_180_days,
+        reason: `Domain is new (${Math.round(domainAgeDays / 30)} months old)`,
+      });
+    } else if (domainAgeDays < 365) {
+      score += SHELL_COMPANY_WEIGHTS.domain_age_under_1_year;
+      applications.push({
+        weight_key: 'domain_age_under_1_year',
+        points: SHELL_COMPANY_WEIGHTS.domain_age_under_1_year,
+        reason: `Domain is less than 1 year old (${Math.round(domainAgeDays / 30)} months)`,
+      });
+    } else if (domainAgeDays < 730) {
+      score += SHELL_COMPANY_WEIGHTS.domain_age_under_2_years;
+      applications.push({
+        weight_key: 'domain_age_under_2_years',
+        points: SHELL_COMPANY_WEIGHTS.domain_age_under_2_years,
+        reason: 'Domain is less than 2 years old',
+      });
+    }
+  }
+
+  // =============================================================================
+  // AI-GENERATED CONTENT SIGNALS (mutually exclusive tiers)
+  // =============================================================================
+  if (aiGeneratedLikelihood) {
+    const aiScore = aiGeneratedLikelihood.ai_generated_score;
+    const confidence = aiGeneratedLikelihood.confidence;
+
+    if (aiScore >= 80) {
+      score += SHELL_COMPANY_WEIGHTS.ai_generated_high;
+      applications.push({
+        weight_key: 'ai_generated_high',
+        points: SHELL_COMPANY_WEIGHTS.ai_generated_high,
+        reason: `High AI-generated content likelihood (score: ${aiScore})`,
+      });
+    } else if (aiScore >= 70 && confidence >= 60) {
+      score += SHELL_COMPANY_WEIGHTS.ai_generated_high_confident;
+      applications.push({
+        weight_key: 'ai_generated_high_confident',
+        points: SHELL_COMPANY_WEIGHTS.ai_generated_high_confident,
+        reason: `AI-generated content detected (score: ${aiScore}, confidence: ${confidence})`,
+      });
+    } else if (aiScore >= 60) {
+      score += SHELL_COMPANY_WEIGHTS.ai_generated_moderate;
+      applications.push({
+        weight_key: 'ai_generated_moderate',
+        points: SHELL_COMPANY_WEIGHTS.ai_generated_moderate,
+        reason: `Moderate AI-generated content indicators (score: ${aiScore})`,
+      });
+    } else if (aiScore >= 50) {
+      score += SHELL_COMPANY_WEIGHTS.ai_generated_low;
+      applications.push({
+        weight_key: 'ai_generated_low',
+        points: SHELL_COMPANY_WEIGHTS.ai_generated_low,
+        reason: `Some AI-generated content indicators (score: ${aiScore})`,
+      });
+    }
+
+    // Suspicious content patterns (additive)
+    const suspiciousPatterns = aiGeneratedLikelihood.signals.suspicious_content_patterns || [];
+    if (suspiciousPatterns.length >= 3) {
+      score += SHELL_COMPANY_WEIGHTS.many_suspicious_patterns;
+      applications.push({
+        weight_key: 'many_suspicious_patterns',
+        points: SHELL_COMPANY_WEIGHTS.many_suspicious_patterns,
+        reason: `Multiple suspicious content patterns: ${suspiciousPatterns.slice(0, 2).join(', ')}`,
+      });
+    } else if (suspiciousPatterns.length >= 1) {
+      score += SHELL_COMPANY_WEIGHTS.some_suspicious_patterns;
+      applications.push({
+        weight_key: 'some_suspicious_patterns',
+        points: SHELL_COMPANY_WEIGHTS.some_suspicious_patterns,
+        reason: `Suspicious content patterns detected: ${suspiciousPatterns[0]}`,
+      });
+    }
+
+    // Infrastructure signals from AI analysis
+    const infra = aiGeneratedLikelihood.signals.infrastructure;
+    if (infra) {
+      if (infra.free_hosting) {
+        score += SHELL_COMPANY_WEIGHTS.free_hosting_detected;
+        applications.push({
+          weight_key: 'free_hosting_detected',
+          points: SHELL_COMPANY_WEIGHTS.free_hosting_detected,
+          reason: `Site hosted on free platform: ${infra.free_hosting}`,
+        });
+      }
+
+      if (infra.is_boilerplate) {
+        score += SHELL_COMPANY_WEIGHTS.boilerplate_structure;
+        applications.push({
+          weight_key: 'boilerplate_structure',
+          points: SHELL_COMPANY_WEIGHTS.boilerplate_structure,
+          reason: 'Generic boilerplate/template structure detected',
+        });
+      }
+
+      if (infra.seo_score < 30) {
+        score += SHELL_COMPANY_WEIGHTS.poor_seo;
+        applications.push({
+          weight_key: 'poor_seo',
+          points: SHELL_COMPANY_WEIGHTS.poor_seo,
+          reason: `Very poor SEO setup (score: ${infra.seo_score}/100)`,
+        });
+      }
+
+      if (!infra.has_robots_txt) {
+        score += SHELL_COMPANY_WEIGHTS.missing_robots_txt;
+        applications.push({
+          weight_key: 'missing_robots_txt',
+          points: SHELL_COMPANY_WEIGHTS.missing_robots_txt,
+          reason: 'Missing robots.txt',
+        });
+      }
+
+      if (!infra.has_sitemap) {
+        score += SHELL_COMPANY_WEIGHTS.missing_sitemap;
+        applications.push({
+          weight_key: 'missing_sitemap',
+          points: SHELL_COMPANY_WEIGHTS.missing_sitemap,
+          reason: 'Missing sitemap',
+        });
+      }
+    }
+  }
+
+  // =============================================================================
+  // CONTACT INFORMATION SIGNALS (capped)
+  // =============================================================================
+  let contactPenalty = 0;
+
+  // Generic business email (Gmail/Outlook/Yahoo for supposed business)
+  if (extractedContactDetails && hasGenericBusinessEmail(
+    extractedContactDetails.emails,
+    signals.target_domain
+  )) {
+    contactPenalty += SHELL_COMPANY_WEIGHTS.generic_business_email;
     applications.push({
-      weight_key: 'site_inactive',
-      points: FRAUD_WEIGHTS.site_inactive,
-      reason: `Site is not active (status: ${signals.reachability.status_code || 'unknown'})`,
+      weight_key: 'generic_business_email',
+      points: SHELL_COMPANY_WEIGHTS.generic_business_email,
+      reason: 'Business uses generic email provider (Gmail/Outlook/Yahoo)',
     });
   }
 
-  // STRONG: DNS failure
+  // No physical address
+  if (!extractedContactDetails || extractedContactDetails.addresses.length === 0) {
+    contactPenalty += SHELL_COMPANY_WEIGHTS.no_physical_address;
+    applications.push({
+      weight_key: 'no_physical_address',
+      points: SHELL_COMPANY_WEIGHTS.no_physical_address,
+      reason: 'No physical address found',
+    });
+  }
+
+  // No phone number
+  if (!extractedContactDetails || extractedContactDetails.phone_numbers.length === 0) {
+    contactPenalty += SHELL_COMPANY_WEIGHTS.no_phone_number;
+    applications.push({
+      weight_key: 'no_phone_number',
+      points: SHELL_COMPANY_WEIGHTS.no_phone_number,
+      reason: 'No phone number found',
+    });
+  }
+
+  // No social media presence
+  const hasSocialLinks = extractedContactDetails && (
+    extractedContactDetails.social_links.linkedin ||
+    extractedContactDetails.social_links.twitter ||
+    extractedContactDetails.social_links.facebook ||
+    extractedContactDetails.social_links.instagram ||
+    (extractedContactDetails.social_links.other && extractedContactDetails.social_links.other.length > 0)
+  );
+  if (!hasSocialLinks) {
+    contactPenalty += SHELL_COMPANY_WEIGHTS.no_social_presence;
+    applications.push({
+      weight_key: 'no_social_presence',
+      points: SHELL_COMPANY_WEIGHTS.no_social_presence,
+      reason: 'No social media presence found',
+    });
+  }
+
+  // No LinkedIn (additional signal for B2B)
+  if (!extractedContactDetails?.social_links.linkedin) {
+    score += SHELL_COMPANY_WEIGHTS.no_linkedin;
+    applications.push({
+      weight_key: 'no_linkedin',
+      points: SHELL_COMPANY_WEIGHTS.no_linkedin,
+      reason: 'No LinkedIn presence',
+    });
+  }
+
+  // Apply contact penalty with cap
+  score += Math.min(contactPenalty, SHELL_COMPANY_WEIGHTS.max_contact_penalty);
+
+  // =============================================================================
+  // INFRASTRUCTURE/SITE QUALITY SIGNALS
+  // =============================================================================
+
+  // Site shell: DNS works but site serves no content
+  if (!signals.reachability.is_active && signals.dns.dns_ok) {
+    score += SHELL_COMPANY_WEIGHTS.site_shell;
+    applications.push({
+      weight_key: 'site_shell',
+      points: SHELL_COMPANY_WEIGHTS.site_shell,
+      reason: `Domain exists (DNS OK) but site serves no content (status: ${signals.reachability.status_code || 'unknown'})`,
+    });
+  }
+
+  // DNS failure
   if (!signals.dns.dns_ok) {
-    score += FRAUD_WEIGHTS.dns_failure;
+    score += SHELL_COMPANY_WEIGHTS.dns_failure;
     applications.push({
       weight_key: 'dns_failure',
-      points: FRAUD_WEIGHTS.dns_failure,
+      points: SHELL_COMPANY_WEIGHTS.dns_failure,
       reason: 'DNS lookup failed - no A or AAAA records',
     });
   }
 
-  // MEDIUM: High urgency score
-  if (signals.content.urgency_score > 5) {
-    score += FRAUD_WEIGHTS.high_urgency_score;
-    applications.push({
-      weight_key: 'high_urgency_score',
-      points: FRAUD_WEIGHTS.high_urgency_score,
-      reason: `High urgency language detected (${signals.content.urgency_score} matches)`,
-    });
-  } else if (signals.content.urgency_score >= 3) {
-    score += FRAUD_WEIGHTS.moderate_urgency_score;
-    applications.push({
-      weight_key: 'moderate_urgency_score',
-      points: FRAUD_WEIGHTS.moderate_urgency_score,
-      reason: `Moderate urgency language detected (${signals.content.urgency_score} matches)`,
-    });
-  }
-
-  // MEDIUM: High discount score
-  if (signals.content.extreme_discount_score > 5) {
-    score += FRAUD_WEIGHTS.high_discount_score;
-    applications.push({
-      weight_key: 'high_discount_score',
-      points: FRAUD_WEIGHTS.high_discount_score,
-      reason: `Extreme discount claims detected (${signals.content.extreme_discount_score} matches)`,
-    });
-  } else if (signals.content.extreme_discount_score >= 3) {
-    score += FRAUD_WEIGHTS.moderate_discount_score;
-    applications.push({
-      weight_key: 'moderate_discount_score',
-      points: FRAUD_WEIGHTS.moderate_discount_score,
-      reason: `Moderate discount claims detected (${signals.content.extreme_discount_score} matches)`,
-    });
-  }
-
-  // MEDIUM: Missing contact/about
-  // Check both standard URL paths AND extracted contact details
-  const hasContactPage = hasPolicyPage(signals, '/contact', '/about');
-  const hasExtractedContact = hasExtractedContactInfo(extractedContactDetails);
-  if (!hasContactPage && !hasExtractedContact) {
-    score += FRAUD_WEIGHTS.missing_contact_page;
-    applications.push({
-      weight_key: 'missing_contact_page',
-      points: FRAUD_WEIGHTS.missing_contact_page,
-      reason: 'No contact or about page found',
-    });
-  }
-
-  // MEDIUM: Missing policy pages
-  // Check both signal checks AND verified policy links from PolicyLink table
-  const hasPrivacy = hasPolicyPage(signals, '/privacy', '/privacy-policy') || verifiedPolicyLinks.privacy;
-  const hasTerms = hasPolicyPage(signals, '/terms', '/terms-of-service') || verifiedPolicyLinks.terms;
-  if (!hasPrivacy && !hasTerms) {
-    score += FRAUD_WEIGHTS.missing_policy_pages;
-    applications.push({
-      weight_key: 'missing_policy_pages',
-      points: FRAUD_WEIGHTS.missing_policy_pages,
-      reason: 'No privacy policy or terms of service found',
-    });
-  }
-
-  // MEDIUM: Cross-domain redirect (also applies to fraud)
-  if (signals.redirects.cross_domain_redirect) {
-    score += FRAUD_WEIGHTS.cross_domain_redirect;
-    applications.push({
-      weight_key: 'cross_domain_redirect',
-      points: FRAUD_WEIGHTS.cross_domain_redirect,
-      reason: 'Redirects to different domain',
-    });
-  }
-
-  // MEDIUM: Bot protection detected (403 but DNS/TLS work - site blocking crawlers)
-  if (signals.reachability.bot_protection_detected) {
-    score += FRAUD_WEIGHTS.bot_protection_detected;
-    applications.push({
-      weight_key: 'bot_protection_detected',
-      points: FRAUD_WEIGHTS.bot_protection_detected,
-      reason: 'Site actively blocks crawlers (returned 403 but DNS and TLS are operational)',
-    });
-  }
-
-  // WEAK-MEDIUM: Impersonation hint
-  if (signals.content.impersonation_hint) {
-    score += FRAUD_WEIGHTS.impersonation_hint;
-    applications.push({
-      weight_key: 'impersonation_hint',
-      points: FRAUD_WEIGHTS.impersonation_hint,
-      reason: 'Impersonation language detected (e.g., "official dealer")',
-    });
-  }
-
-  // WEAK-MEDIUM: No MX records
+  // No MX records
   if (!signals.dns.mx_present) {
-    score += FRAUD_WEIGHTS.no_mx_records;
+    score += SHELL_COMPANY_WEIGHTS.no_mx_records;
     applications.push({
       weight_key: 'no_mx_records',
-      points: FRAUD_WEIGHTS.no_mx_records,
+      points: SHELL_COMPANY_WEIGHTS.no_mx_records,
       reason: 'No MX records - domain cannot receive email',
     });
   }
 
-  // WEAK: Low word count
+  // Low word count
   const wordCount = signals.reachability.homepage_text_word_count;
   if (wordCount !== null && wordCount < 150) {
-    score += FRAUD_WEIGHTS.low_word_count;
+    score += SHELL_COMPANY_WEIGHTS.low_word_count;
     applications.push({
       weight_key: 'low_word_count',
-      points: FRAUD_WEIGHTS.low_word_count,
+      points: SHELL_COMPANY_WEIGHTS.low_word_count,
       reason: `Very sparse homepage content (${wordCount} words)`,
     });
   }
 
-  // WEAK: Cert expiring soon
-  if (signals.tls.expiring_soon) {
-    score += FRAUD_WEIGHTS.cert_expiring_soon;
+  // Missing contact AND about pages (check multiple common path variations)
+  const hasContactPage = hasPolicyPage(signals, '/contact', '/contact-us', '/contactus', '/pages/contact', '/pages/contact-us');
+  const hasAboutPage = hasPolicyPage(signals, '/about', '/about-us', '/aboutus', '/pages/about', '/pages/about-us');
+  if (!hasContactPage && !hasAboutPage) {
+    score += SHELL_COMPANY_WEIGHTS.missing_contact_and_about;
     applications.push({
-      weight_key: 'cert_expiring_soon',
-      points: FRAUD_WEIGHTS.cert_expiring_soon,
-      reason: `TLS certificate expires in ${signals.tls.days_to_expiry} days`,
+      weight_key: 'missing_contact_and_about',
+      points: SHELL_COMPANY_WEIGHTS.missing_contact_and_about,
+      reason: 'No contact or about page found',
+    });
+  }
+
+  // Cross-domain redirect (suspicious for shell companies)
+  if (signals.redirects.cross_domain_redirect) {
+    score += SHELL_COMPANY_WEIGHTS.cross_domain_redirect;
+    applications.push({
+      weight_key: 'cross_domain_redirect',
+      points: SHELL_COMPANY_WEIGHTS.cross_domain_redirect,
+      reason: 'Redirects to different domain',
+    });
+  }
+
+  // =============================================================================
+  // CONTENT RED FLAGS
+  // =============================================================================
+
+  // Urgency language
+  if (signals.content.urgency_score >= 3) {
+    score += SHELL_COMPANY_WEIGHTS.high_urgency_score;
+    applications.push({
+      weight_key: 'high_urgency_score',
+      points: SHELL_COMPANY_WEIGHTS.high_urgency_score,
+      reason: `Urgency language detected (${signals.content.urgency_score} matches)`,
+    });
+  }
+
+  // Discount language
+  if (signals.content.extreme_discount_score >= 3) {
+    score += SHELL_COMPANY_WEIGHTS.high_discount_score;
+    applications.push({
+      weight_key: 'high_discount_score',
+      points: SHELL_COMPANY_WEIGHTS.high_discount_score,
+      reason: `Extreme discount claims detected (${signals.content.extreme_discount_score} matches)`,
+    });
+  }
+
+  // Impersonation hints
+  if (signals.content.impersonation_hint) {
+    score += SHELL_COMPANY_WEIGHTS.impersonation_hint;
+    applications.push({
+      weight_key: 'impersonation_hint',
+      points: SHELL_COMPANY_WEIGHTS.impersonation_hint,
+      reason: 'Impersonation language detected (e.g., "official dealer")',
     });
   }
 
@@ -562,129 +815,6 @@ function calculateComplianceScore(
 }
 
 // =============================================================================
-// Credit Score Calculation
-// =============================================================================
-
-function calculateCreditScore(
-  signals: DomainIntelSignals,
-  extractedContactDetails: ExtractedContactDetails | null,
-  verifiedPolicyLinks: VerifiedPolicyLinks
-): ScoreResult {
-  let score = 0;
-  const applications: WeightApplication[] = [];
-
-  // STRONG: Site inactive
-  if (!signals.reachability.is_active) {
-    score += CREDIT_WEIGHTS.site_inactive;
-    applications.push({
-      weight_key: 'site_inactive',
-      points: CREDIT_WEIGHTS.site_inactive,
-      reason: `Site is not active (status: ${signals.reachability.status_code || 'unknown'})`,
-    });
-  }
-
-  // STRONG: DNS failure
-  if (!signals.dns.dns_ok) {
-    score += CREDIT_WEIGHTS.dns_failure;
-    applications.push({
-      weight_key: 'dns_failure',
-      points: CREDIT_WEIGHTS.dns_failure,
-      reason: 'DNS lookup failed',
-    });
-  }
-
-  // MEDIUM: Missing contact AND policies
-  // Check both standard URL paths AND extracted contact details
-  // Also check verified policy links from PolicyLink table
-  const hasContactPage = hasPolicyPage(signals, '/contact', '/about');
-  const hasExtractedContact = hasExtractedContactInfo(extractedContactDetails);
-  const hasContact = hasContactPage || hasExtractedContact;
-  const hasPolicies = hasPolicyPage(signals, '/privacy', '/privacy-policy', '/terms', '/terms-of-service') ||
-    verifiedPolicyLinks.privacy || verifiedPolicyLinks.terms;
-  if (!hasContact && !hasPolicies) {
-    score += CREDIT_WEIGHTS.missing_contact_and_policies;
-    applications.push({
-      weight_key: 'missing_contact_and_policies',
-      points: CREDIT_WEIGHTS.missing_contact_and_policies,
-      reason: 'No contact info and no policy pages',
-    });
-  }
-
-  // MEDIUM: Parked domain hint
-  if (isParkedOrComingSoon(signals)) {
-    score += CREDIT_WEIGHTS.parked_domain_hint;
-    applications.push({
-      weight_key: 'parked_domain_hint',
-      points: CREDIT_WEIGHTS.parked_domain_hint,
-      reason: `Title suggests parked/inactive site: "${signals.reachability.html_title}"`,
-    });
-  }
-
-  // MEDIUM: Redirect to different domain
-  if (signals.redirects.mismatch_input_vs_final_domain) {
-    score += CREDIT_WEIGHTS.redirect_to_different_domain;
-    applications.push({
-      weight_key: 'redirect_to_different_domain',
-      points: CREDIT_WEIGHTS.redirect_to_different_domain,
-      reason: 'Domain redirects to a different site',
-    });
-  }
-
-  // WEAK-MEDIUM: Low word count
-  const wordCount = signals.reachability.homepage_text_word_count;
-  if (wordCount !== null && wordCount < 150) {
-    score += CREDIT_WEIGHTS.low_word_count;
-    applications.push({
-      weight_key: 'low_word_count',
-      points: CREDIT_WEIGHTS.low_word_count,
-      reason: `Sparse homepage content (${wordCount} words)`,
-    });
-  }
-
-  // WEAK-MEDIUM: Cert issues
-  if (!signals.tls.https_ok || signals.tls.expiring_soon) {
-    score += CREDIT_WEIGHTS.cert_issues;
-    applications.push({
-      weight_key: 'cert_issues',
-      points: CREDIT_WEIGHTS.cert_issues,
-      reason: signals.tls.https_ok ? 'TLS certificate expiring soon' : 'HTTPS not working',
-    });
-  }
-
-  // WEAK-MEDIUM: No MX records
-  if (!signals.dns.mx_present) {
-    score += CREDIT_WEIGHTS.no_mx_records;
-    applications.push({
-      weight_key: 'no_mx_records',
-      points: CREDIT_WEIGHTS.no_mx_records,
-      reason: 'No email capability (no MX records)',
-    });
-  }
-
-  // WEAK: Missing sitemap
-  if (signals.robots_sitemap.sitemap_url_count === null) {
-    score += CREDIT_WEIGHTS.missing_sitemap;
-    applications.push({
-      weight_key: 'missing_sitemap',
-      points: CREDIT_WEIGHTS.missing_sitemap,
-      reason: 'No sitemap found',
-    });
-  }
-
-  // WEAK: High redirect chain
-  if (signals.redirects.redirect_chain_length > 3) {
-    score += CREDIT_WEIGHTS.high_redirect_chain;
-    applications.push({
-      weight_key: 'high_redirect_chain',
-      points: CREDIT_WEIGHTS.high_redirect_chain,
-      reason: `Long redirect chain (${signals.redirects.redirect_chain_length} hops)`,
-    });
-  }
-
-  return { score: clamp(score, 0, 100), applications };
-}
-
-// =============================================================================
 // Confidence Calculation
 // =============================================================================
 
@@ -745,16 +875,14 @@ function determinePrimaryRiskType(scores: RiskTypeScores): RiskType {
 
 function generateTopReasons(
   phishingApps: WeightApplication[],
-  fraudApps: WeightApplication[],
-  complianceApps: WeightApplication[],
-  creditApps: WeightApplication[]
+  shellCompanyApps: WeightApplication[],
+  complianceApps: WeightApplication[]
 ): string[] {
   // Combine all applications with their category
   const allApps: Array<WeightApplication & { category: string }> = [
     ...phishingApps.map(a => ({ ...a, category: 'Phishing' })),
-    ...fraudApps.map(a => ({ ...a, category: 'Fraud' })),
+    ...shellCompanyApps.map(a => ({ ...a, category: 'Shell Company' })),
     ...complianceApps.map(a => ({ ...a, category: 'Compliance' })),
-    ...creditApps.map(a => ({ ...a, category: 'Credit' })),
   ];
 
   // Sort by points descending
@@ -780,17 +908,15 @@ function generateTopReasons(
 
 function generateSignalPaths(
   phishingApps: WeightApplication[],
-  fraudApps: WeightApplication[],
-  complianceApps: WeightApplication[],
-  creditApps: WeightApplication[]
+  shellCompanyApps: WeightApplication[],
+  complianceApps: WeightApplication[]
 ): string[] {
   const paths = new Set<string>();
 
   const categoryMap: Record<string, WeightApplication[]> = {
     phishing: phishingApps,
-    fraud: fraudApps,
+    shell_company: shellCompanyApps,
     compliance: complianceApps,
-    credit: creditApps,
   };
 
   for (const [category, apps] of Object.entries(categoryMap)) {
@@ -940,6 +1066,50 @@ async function persistScoringSignalLogs(
 }
 
 // =============================================================================
+// Website Activity Override
+// =============================================================================
+
+/**
+ * Check if the scan/domain shows the website is actually active.
+ * This is useful when the simple HTTP check in collectSignals fails,
+ * but the Playwright-based discovery pipeline succeeded earlier.
+ *
+ * The discovery pipeline updates domain.isActive and websiteScan.isActive
+ * when it successfully fetches content with Playwright (bypassing bot protection).
+ */
+async function getActualWebsiteActiveStatus(scanId: string): Promise<{
+  isActive: boolean;
+  statusCode: number | null;
+} | null> {
+  try {
+    const scan = await prisma.websiteScan.findUnique({
+      where: { id: scanId },
+      select: {
+        isActive: true,
+        statusCode: true,
+        domain: {
+          select: {
+            isActive: true,
+            statusCode: true,
+          },
+        },
+      },
+    });
+
+    if (!scan) return null;
+
+    // Prefer the scan's status, fall back to domain status
+    // If either shows active, the site is reachable
+    const isActive = scan.isActive || scan.domain.isActive;
+    const statusCode = scan.statusCode || scan.domain.statusCode;
+
+    return { isActive, statusCode };
+  } catch {
+    return null;
+  }
+}
+
+// =============================================================================
 // Main Export
 // =============================================================================
 
@@ -948,24 +1118,43 @@ export async function scoreRisk(
   signals: DomainIntelSignals,
   urlsChecked: string[]
 ): Promise<RiskAssessment> {
-  // Fetch extracted contact details from database (from AI extraction)
-  const extractedContactDetails = await getExtractedContactDetails(scanId);
+  // Fetch all required data from database in parallel (saves ~500-600ms)
+  const [extractedContactDetails, verifiedPolicyLinks, aiGeneratedLikelihood, actualStatus] = await Promise.all([
+    // Contact details from AI extraction
+    getExtractedContactDetails(scanId),
+    // Verified policy links (more reliable than simple HEAD/GET checks)
+    getVerifiedPolicyLinks(scanId),
+    // AI-generated likelihood for shell company detection
+    getAiGeneratedLikelihood(scanId),
+    // Check if scan/domain shows website is actually active
+    // (overrides signals when Playwright succeeded but HTTP check failed)
+    getActualWebsiteActiveStatus(scanId),
+  ]);
+  if (actualStatus?.isActive && !signals.reachability.is_active) {
+    console.log(
+      `[scoreRisk] Overriding is_active: signals=${signals.reachability.is_active}, ` +
+      `scan/domain=${actualStatus.isActive} (Playwright likely bypassed bot protection)`
+    );
+    // Create a modified signals object with the corrected active status
+    signals = {
+      ...signals,
+      reachability: {
+        ...signals.reachability,
+        is_active: true,
+        status_code: actualStatus.statusCode || signals.reachability.status_code,
+      },
+    };
+  }
 
-  // Fetch verified policy links from database (from policy links extraction)
-  // These are more reliable than simple HEAD/GET checks
-  const verifiedPolicyLinks = await getVerifiedPolicyLinks(scanId);
-
-  // Calculate individual risk scores
+  // Calculate individual risk scores (3 categories: phishing, shell_company, compliance)
   const phishingResult = calculatePhishingScore(signals);
-  const fraudResult = calculateFraudScore(signals, extractedContactDetails, verifiedPolicyLinks);
+  const shellCompanyResult = calculateShellCompanyScore(signals, extractedContactDetails, aiGeneratedLikelihood);
   const complianceResult = calculateComplianceScore(signals, extractedContactDetails, verifiedPolicyLinks);
-  const creditResult = calculateCreditScore(signals, extractedContactDetails, verifiedPolicyLinks);
 
   const riskTypeScores: RiskTypeScores = {
     phishing: phishingResult.score,
-    fraud: fraudResult.score,
+    shell_company: shellCompanyResult.score,
     compliance: complianceResult.score,
-    credit: creditResult.score,
   };
 
   // Calculate overall score and determine primary risk
@@ -976,16 +1165,14 @@ export async function scoreRisk(
   // Generate reasons and evidence
   const reasons = generateTopReasons(
     phishingResult.applications,
-    fraudResult.applications,
-    complianceResult.applications,
-    creditResult.applications
+    shellCompanyResult.applications,
+    complianceResult.applications
   );
 
   const signalPaths = generateSignalPaths(
     phishingResult.applications,
-    fraudResult.applications,
-    complianceResult.applications,
-    creditResult.applications
+    shellCompanyResult.applications,
+    complianceResult.applications
   );
 
   const assessment: RiskAssessment = {
@@ -1020,11 +1207,10 @@ export async function createFailedAssessment(
     overall_risk_score: 0,
     risk_type_scores: {
       phishing: 0,
-      fraud: 0,
+      shell_company: 0,
       compliance: 0,
-      credit: 0,
     },
-    primary_risk_type: 'fraud',
+    primary_risk_type: 'shell_company',
     confidence: 0,
     reasons: [],
     evidence: {

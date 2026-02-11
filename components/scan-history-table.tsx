@@ -107,26 +107,26 @@ function getRiskScore(dataPoints: DataPoint[]): {
   primaryRiskType: string | null;
   confidence: string | null;
   phishing: number | null;
-  fraud: number | null;
+  shellCompany: number | null;
   compliance: number | null;
-  credit: number | null;
 } {
   const riskDataPoint = dataPoints.find((dp) => dp.key === "domain_risk_assessment");
-  if (!riskDataPoint) return { overallScore: null, primaryRiskType: null, confidence: null, phishing: null, fraud: null, compliance: null, credit: null };
+  if (!riskDataPoint) return { overallScore: null, primaryRiskType: null, confidence: null, phishing: null, shellCompany: null, compliance: null };
 
   try {
     const value = JSON.parse(riskDataPoint.value);
+    // Support both new schema (risk_type_scores.shell_company) and any legacy data
+    const riskTypeScores = value.risk_type_scores || {};
     return {
       overallScore: value.overall_risk_score ?? null,
       primaryRiskType: value.primary_risk_type ?? null,
       confidence: value.confidence ?? null,
-      phishing: value.phishing_score ?? null,
-      fraud: value.fraud_score ?? null,
-      compliance: value.compliance_score ?? null,
-      credit: value.credit_score ?? null,
+      phishing: riskTypeScores.phishing ?? null,
+      shellCompany: riskTypeScores.shell_company ?? null,
+      compliance: riskTypeScores.compliance ?? null,
     };
   } catch {
-    return { overallScore: null, primaryRiskType: null, confidence: null, phishing: null, fraud: null, compliance: null, credit: null };
+    return { overallScore: null, primaryRiskType: null, confidence: null, phishing: null, shellCompany: null, compliance: null };
   }
 }
 
@@ -334,10 +334,10 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
 
   if (isLoading) {
     return (
-      <div className="border rounded-lg">
+      <div className="border rounded-xl bg-card overflow-hidden">
         <Table>
           <TableHeader>
-            <TableRow>
+            <TableRow className="hover:bg-transparent">
               <TableHead>Website URL</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="whitespace-nowrap">AI</TableHead>
@@ -348,11 +348,17 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
             </TableRow>
           </TableHeader>
           <TableBody>
-            <TableRow>
-              <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                Loading...
-              </TableCell>
-            </TableRow>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <TableRow key={i}>
+                <TableCell><div className="h-4 w-32 bg-muted animate-pulse rounded" /></TableCell>
+                <TableCell><div className="h-5 w-16 bg-muted animate-pulse rounded-full" /></TableCell>
+                <TableCell><div className="h-4 w-8 bg-muted animate-pulse rounded" /></TableCell>
+                <TableCell><div className="h-4 w-8 bg-muted animate-pulse rounded" /></TableCell>
+                <TableCell><div className="h-4 w-20 bg-muted animate-pulse rounded" /></TableCell>
+                <TableCell><div className="h-4 w-20 bg-muted animate-pulse rounded" /></TableCell>
+                <TableCell><div className="h-4 w-16 bg-muted animate-pulse rounded ml-auto" /></TableCell>
+              </TableRow>
+            ))}
           </TableBody>
         </Table>
       </div>
@@ -360,10 +366,10 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
   }
 
   return (
-    <div className="border rounded-lg">
+    <div className="border rounded-xl bg-card overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow>
+          <TableRow className="hover:bg-transparent">
             <SortableTableHead
               sortKey="normalizedUrl"
               currentSortKey={sortField}
@@ -410,7 +416,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
             >
               Created
             </SortableTableHead>
-            <TableHead className="text-right whitespace-nowrap">Actions</TableHead>
+            <TableHead className="text-right whitespace-nowrap w-[120px]">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -419,11 +425,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
             return (
               <TableRow
                 key={domain.id}
-                className={`cursor-pointer relative ${
-                  hasContacts
-                    ? "!border-l-[3px] !border-l-green-500"
-                    : "!border-l-[3px] !border-l-red-400/50"
-                }`}
+                className="cursor-pointer group/row"
                 onClick={(e) => {
                   // Don't navigate if clicking on interactive elements
                   const target = e.target as HTMLElement;
@@ -439,11 +441,26 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
               >
                 <TableCell className="font-medium">
                   <div className="flex items-center gap-2">
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div
+                            className={`w-2 h-2 rounded-full shrink-0 ${
+                              hasContacts ? "bg-success" : "bg-muted-foreground/30"
+                            }`}
+                            data-interactive
+                          />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {hasContacts ? "Has contact info" : "No contact info"}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                     <a
                       href={`https://${domain.normalizedUrl}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="hover:underline text-link"
+                      className="hover:underline text-link font-medium"
                       onClick={(e) => e.stopPropagation()}
                     >
                       {domain.normalizedUrl}
@@ -538,10 +555,16 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
                 </TableCell>
                 <TableCell>
                   {(() => {
-                    const { overallScore, primaryRiskType, confidence, phishing, fraud, compliance, credit } = getRiskScore(domain.dataPoints);
+                    const { overallScore, primaryRiskType, confidence, phishing, shellCompany, compliance } = getRiskScore(domain.dataPoints);
                     if (overallScore === null) {
                       return <span className="text-muted-foreground text-xs">-</span>;
                     }
+                    // Format primary risk type for display
+                    const formatRiskType = (type: string | null) => {
+                      if (!type) return 'Unknown';
+                      if (type === 'shell_company') return 'Shell Company';
+                      return type.charAt(0).toUpperCase() + type.slice(1);
+                    };
                     return (
                       <TooltipProvider>
                         <Tooltip>
@@ -561,12 +584,11 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
                           <TooltipContent>
                             <div className="text-xs space-y-1">
                               <p className="font-medium">Risk Assessment: {overallScore}/100</p>
-                              <p className="text-muted-foreground">Primary: {primaryRiskType} ({confidence})</p>
+                              <p className="text-muted-foreground">Primary: {formatRiskType(primaryRiskType)} ({confidence})</p>
                               <div className="pt-1 border-t border-border/50 space-y-0.5">
                                 <p>Phishing: {phishing}</p>
-                                <p>Fraud: {fraud}</p>
+                                <p>Shell Company: {shellCompany}</p>
                                 <p>Compliance: {compliance}</p>
-                                <p>Credit: {credit}</p>
                               </div>
                             </div>
                           </TooltipContent>
@@ -575,43 +597,45 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
                     );
                   })()}
                 </TableCell>
-                <TableCell className="text-muted-foreground text-sm">
+                <TableCell className="text-muted-foreground text-xs">
                   {domain.lastCheckedAt
                     ? formatDistanceToNow(new Date(domain.lastCheckedAt), {
                         addSuffix: true,
                       })
                     : "Never"}
                 </TableCell>
-                <TableCell className="text-muted-foreground text-sm">
+                <TableCell className="text-muted-foreground text-xs">
                   {formatDistanceToNow(new Date(domain.createdAt), {
                     addSuffix: true,
                   })}
                 </TableCell>
                 <TableCell className="text-right" data-interactive>
                   <TooltipProvider>
-                    <div className="flex items-center justify-end gap-1">
+                    <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover/row:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <button
                             onClick={(e) => handleView(e, domain.id)}
-                            className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                            aria-label={`View report for ${domain.normalizedUrl}`}
+                            className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
-                            <Eye className="h-4 w-4" />
+                            <Eye className="h-4 w-4" aria-hidden="true" />
                           </button>
                         </TooltipTrigger>
-                        <TooltipContent>View details</TooltipContent>
+                        <TooltipContent>View report</TooltipContent>
                       </Tooltip>
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <button
                             onClick={(e) => handleRescan(e, domain.id)}
                             disabled={rescanning === domain.id}
-                            className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                            aria-label={`Rescan ${domain.normalizedUrl}`}
+                            className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors duration-150 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
                             {rescanning === domain.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                             ) : (
-                              <RefreshCw className="h-4 w-4" />
+                              <RefreshCw className="h-4 w-4" aria-hidden="true" />
                             )}
                           </button>
                         </TooltipTrigger>
@@ -622,12 +646,13 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
                           <button
                             onClick={(e) => handleDelete(e, domain.id)}
                             disabled={deleting === domain.id}
-                            className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                            aria-label={`Delete ${domain.normalizedUrl}`}
+                            className="p-2 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors duration-150 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
                             {deleting === domain.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                             ) : (
-                              <Trash2 className="h-4 w-4" />
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
                             )}
                           </button>
                         </TooltipTrigger>

@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { format } from "date-fns";
-import { ExternalLink, Mail, Phone, MapPin, Link2, Globe, Activity, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, History, Bot, AlertTriangle, Info, ChevronDown, ChevronUp, ShoppingCart } from "lucide-react";
+import { ExternalLink, Mail, Phone, MapPin, Link2, Globe, Activity, CheckCircle, XCircle, Clock, AlertCircle, ChevronLeft, History, Bot, AlertTriangle, Info, ChevronDown, ChevronUp, ShoppingCart, Calendar } from "lucide-react";
 import Link from "next/link";
 import { RescanButton } from "./rescan-button";
 import { AiScanButton } from "./ai-scan-button";
@@ -22,6 +22,7 @@ import { HomepageSkusCard } from "./homepage-skus-card";
 import { HomepageSkuCountClient } from "./homepage-sku-count-client";
 import { ScanStatusBadge } from "./scan-status-badge";
 import { PolicyLinksCard } from "./policy-links-card";
+import { InvestigationNotes } from "./investigation-notes";
 import type { ContactDetails, AiGeneratedLikelihood } from "@/lib/extractors";
 import type { RiskAssessment, DomainIntelSignals } from "@/lib/domainIntel/schemas";
 
@@ -53,6 +54,9 @@ async function getDomainData(id: string) {
       urlInputs: {
         orderBy: { createdAt: "desc" },
         take: 10,
+      },
+      investigationNotes: {
+        orderBy: { createdAt: "desc" },
       },
     },
   });
@@ -88,6 +92,9 @@ async function getDomainData(id: string) {
             orderBy: { createdAt: "desc" },
             take: 10,
           },
+          investigationNotes: {
+            orderBy: { createdAt: "desc" },
+          },
         },
       });
     }
@@ -113,31 +120,51 @@ export default async function ScanDetailPage({
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="space-y-4">
-        <Link
-          href="/scans"
-          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ChevronLeft className="h-4 w-4" />
-          Back to History
-        </Link>
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-3xl font-bold mb-2">Domain Intelligence</h1>
-            <a
-              href={`https://${domain.normalizedUrl}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-lg text-link hover:underline flex items-center gap-2"
+      {/* Sticky Report Header */}
+      <div className="sticky top-16 z-10 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4 bg-background/95 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80 border-b">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <Link
+              href="/scans"
+              className="text-muted-foreground hover:text-foreground transition-colors duration-150 p-1 rounded-md hover:bg-muted"
+              aria-label="Back to scan history"
             >
-              {domain.normalizedUrl}
-              <ExternalLink className="h-4 w-4" />
-            </a>
+              <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+            </Link>
+            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+              <Globe className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <a
+                href={`https://${domain.normalizedUrl}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-lg font-semibold text-link hover:underline flex items-center gap-2"
+              >
+                {domain.normalizedUrl}
+                <ExternalLink className="h-4 w-4" />
+              </a>
+              <div className="flex items-center gap-2 mt-0.5">
+                <ScanStatusBadge
+                  domainId={domain.id}
+                  initialIsActive={domain.isActive}
+                  initialStatusCode={domain.statusCode}
+                  initialScanStatus={latestScan?.status ?? null}
+                  initialScanCreatedAt={latestScan?.createdAt?.toISOString() ?? null}
+                />
+                <span className="text-xs text-muted-foreground">
+                  Last scanned {domain.lastCheckedAt ? format(new Date(domain.lastCheckedAt), "MMM d, h:mm a") : "Never"}
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <RescanButton scanId={domain.id} normalizedUrl={domain.normalizedUrl} />
-          </div>
+          <RescanButton
+            scanId={domain.id}
+            domainId={domain.id}
+            isManuallyRisky={domain.isManuallyRisky}
+            initialScanStatus={latestScan?.status ?? null}
+            initialScanCreatedAt={latestScan?.createdAt?.toISOString() ?? null}
+          />
         </div>
       </div>
 
@@ -146,7 +173,7 @@ export default async function ScanDetailPage({
 
       {/* Assessments Section */}
       <div>
-        <h2 className="text-2xl font-bold mb-4">Assessments</h2>
+        <h2 className="text-section-title mb-4">Assessments</h2>
         <div className="space-y-4">
           {/* AI Generated Likelihood */}
           {(() => {
@@ -236,7 +263,7 @@ export default async function ScanDetailPage({
 
       {/* Data Points Extracted Section */}
       <div>
-        <h2 className="text-2xl font-bold mb-4">Data Points Extracted</h2>
+        <h2 className="text-section-title mb-4">Data Points Extracted</h2>
         <div className="space-y-4">
           {/* Contact Details */}
           {(() => {
@@ -559,6 +586,12 @@ export default async function ScanDetailPage({
           </CardContent>
         </Card>
       )}
+
+      {/* Investigation Notes - at the end */}
+      <InvestigationNotes
+        domainId={domain.id}
+        initialNotes={domain.investigationNotes}
+      />
     </div>
   );
 }
@@ -583,10 +616,10 @@ function ContactDetailsCard({
 
   return (
     <Card>
-      <CardHeader className="pb-4">
+      <CardHeader tint="data" className="pb-4">
         <div className="space-y-1.5">
           <CardTitle className="flex items-center gap-2">
-            <Mail className="h-5 w-5" />
+            <Mail className="h-5 w-5 text-blue-600" />
             Contact Details
           </CardTitle>
           <CardDescription>
@@ -594,8 +627,7 @@ function ContactDetailsCard({
           </CardDescription>
         </div>
       </CardHeader>
-      <CardContent className="space-y-6">
-        <CardDivider className="-mt-2" />
+      <CardContent className="space-y-6 pt-6">
         {data.primary_contact_page_url && (
           <div>
             <p className="text-sm font-medium text-muted-foreground mb-2">
@@ -812,11 +844,11 @@ function AiGeneratedLikelihoodCard({
 
   return (
     <Card>
-      <CardHeader className="pb-4">
+      <CardHeader tint="ai" className="pb-4">
         <div className="flex items-center justify-between">
           <div className="space-y-1.5">
             <CardTitle className="flex items-center gap-2">
-              <Bot className="h-5 w-5" />
+              <Bot className="h-5 w-5 text-purple-600" />
               AI-generated likelihood
             </CardTitle>
             <CardDescription>
@@ -829,8 +861,7 @@ function AiGeneratedLikelihoodCard({
           />
         </div>
       </CardHeader>
-      <CardContent className="space-y-6">
-        <CardDivider className="-mt-2" />
+      <CardContent className="space-y-6 pt-6">
 
         {/* Main Score Display */}
         <div className="flex items-center gap-6">
@@ -946,7 +977,7 @@ function AiGeneratedLikelihoodCard({
         </div>
 
         {/* Detected Signals */}
-        {(data.signals.generator_meta || data.signals.tech_hints.length > 0) && (
+        {(data.signals.generator_meta || (data.signals.tech_hints?.length ?? 0) > 0) && (
           <div>
             <p className="text-sm font-medium text-muted-foreground mb-2">
               Detected Technology
@@ -957,7 +988,7 @@ function AiGeneratedLikelihoodCard({
                   {data.signals.generator_meta}
                 </Badge>
               )}
-              {data.signals.tech_hints.map((hint, idx) => (
+              {data.signals.tech_hints?.map((hint, idx) => (
                 <Badge key={idx} variant="outline" className="text-xs">
                   {hint}
                 </Badge>
@@ -967,13 +998,13 @@ function AiGeneratedLikelihoodCard({
         )}
 
         {/* AI Markers */}
-        {data.signals.ai_markers.length > 0 && (
+        {(data.signals.ai_markers?.length ?? 0) > 0 && (
           <div>
             <p className="text-sm font-medium text-muted-foreground mb-2">
               AI Markers Found
             </p>
             <ul className="space-y-1">
-              {data.signals.ai_markers.map((marker, idx) => (
+              {data.signals.ai_markers?.map((marker, idx) => (
                 <li key={idx} className="text-sm flex items-start gap-2">
                   <AlertCircle className="h-4 w-4 text-caution flex-shrink-0 mt-0.5" />
                   {marker}
@@ -1097,25 +1128,23 @@ function AiGeneratedLikelihoodCard({
 function RiskAssessmentCard({ data, domainId }: { data: RiskAssessment; domainId: string }) {
   const riskTypeLabels: Record<string, string> = {
     phishing: "Phishing",
-    fraud: "Fraud",
+    shell_company: "Shell Company",
     compliance: "Compliance",
-    credit: "Credit",
   };
 
   const riskTypeIcons: Record<string, React.ReactNode> = {
     phishing: <AlertTriangle className="h-4 w-4" />,
-    fraud: <AlertCircle className="h-4 w-4" />,
+    shell_company: <AlertCircle className="h-4 w-4" />,
     compliance: <Info className="h-4 w-4" />,
-    credit: <Activity className="h-4 w-4" />,
   };
 
   return (
     <Card>
-      <CardHeader className="pb-4">
+      <CardHeader tint="risk" className="pb-4">
         <div className="flex items-center justify-between">
           <div className="space-y-1.5">
             <CardTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5" />
+              <AlertTriangle className="h-5 w-5 text-orange-600" />
               Risk Assessment
             </CardTitle>
             <CardDescription>
@@ -1128,8 +1157,7 @@ function RiskAssessmentCard({ data, domainId }: { data: RiskAssessment; domainId
           />
         </div>
       </CardHeader>
-      <CardContent className="space-y-6">
-        <CardDivider className="-mt-2" />
+      <CardContent className="space-y-6 pt-6">
 
         {/* Main Score Display */}
         <div className="flex items-center gap-6">
@@ -1278,10 +1306,10 @@ function RiskAssessmentCard({ data, domainId }: { data: RiskAssessment; domainId
 function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
   return (
     <Card>
-      <CardHeader className="pb-4">
+      <CardHeader tint="info" className="pb-4">
         <div className="space-y-1.5">
           <CardTitle className="flex items-center gap-2">
-            <Globe className="h-5 w-5" />
+            <Globe className="h-5 w-5 text-primary" />
             Domain Intelligence Signals
           </CardTitle>
           <CardDescription>
@@ -1289,8 +1317,7 @@ function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
           </CardDescription>
         </div>
       </CardHeader>
-      <CardContent>
-        <hr className="border-border mb-4" />
+      <CardContent className="pt-6">
         <Accordion>
           <AccordionItem title="Reachability & Response">
             <div className="grid grid-cols-2 gap-4 text-sm">
@@ -1448,6 +1475,65 @@ function DomainIntelSignalsCard({ data }: { data: DomainIntelSignals }) {
             </div>
           </AccordionItem>
 
+          {data.rdap && (
+            <AccordionItem title="Domain Registration (RDAP)">
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">RDAP Available:</span>
+                  {data.rdap.rdap_available ? (
+                    <CheckCircle className="h-4 w-4 text-success" />
+                  ) : (
+                    <XCircle className="h-4 w-4 text-destructive" />
+                  )}
+                </div>
+                {data.rdap.registration_date && (
+                  <div>
+                    <span className="text-muted-foreground">Registered:</span>{" "}
+                    {new Date(data.rdap.registration_date).toLocaleDateString()}
+                  </div>
+                )}
+                {data.rdap.expiration_date && (
+                  <div>
+                    <span className="text-muted-foreground">Expires:</span>{" "}
+                    {new Date(data.rdap.expiration_date).toLocaleDateString()}
+                  </div>
+                )}
+                {data.rdap.domain_age_years !== null && (
+                  <div>
+                    <span className="text-muted-foreground">Domain Age:</span>{" "}
+                    <span className={data.rdap.domain_age_years < 1 ? "text-orange-500 font-medium" : ""}>
+                      {data.rdap.domain_age_years.toFixed(1)} years ({data.rdap.domain_age_days} days)
+                    </span>
+                  </div>
+                )}
+                {data.rdap.registrar && (
+                  <div>
+                    <span className="text-muted-foreground">Registrar:</span>{" "}
+                    {data.rdap.registrar}
+                  </div>
+                )}
+                {data.rdap.status && data.rdap.status.length > 0 && (
+                  <div>
+                    <span className="text-muted-foreground">Status:</span>{" "}
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {data.rdap.status.map((s: string, i: number) => (
+                        <Badge key={i} variant="outline" className="text-xs">
+                          {s}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {data.rdap.error && (
+                  <div className="text-destructive">
+                    <span className="text-muted-foreground">Error:</span>{" "}
+                    {data.rdap.error}
+                  </div>
+                )}
+              </div>
+            </AccordionItem>
+          )}
+
           <AccordionItem title="Raw JSON">
             <pre className="text-xs bg-muted p-4 rounded overflow-auto max-h-96">
               {JSON.stringify(data, null, 2)}
@@ -1473,80 +1559,145 @@ function SummaryCard({
   // Extract scores from data points
   const riskDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_risk_assessment");
   const aiDataPoint = domain.dataPoints.find((dp: any) => dp.key === "ai_generated_likelihood");
+  const signalsDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_intel_signals");
 
   const riskScore = riskDataPoint ? JSON.parse(riskDataPoint.value).overall_risk_score : null;
   const aiScore = aiDataPoint ? JSON.parse(aiDataPoint.value).ai_generated_score : null;
 
+  // Extract domain age from signals
+  let domainAgeYears: number | null = null;
+  let domainAgeDays: number | null = null;
+  let registrationDate: string | null = null;
+  let rdapAvailable = false;
+
+  if (signalsDataPoint) {
+    const signals = JSON.parse(signalsDataPoint.value);
+    if (signals.rdap) {
+      domainAgeYears = signals.rdap.domain_age_years;
+      domainAgeDays = signals.rdap.domain_age_days;
+      registrationDate = signals.rdap.registration_date;
+      rdapAvailable = signals.rdap.rdap_available;
+    }
+  }
+
+  // Format domain age for display with smart precision
+  const formatDomainAge = () => {
+    if (domainAgeDays === null) return null;
+
+    const totalDays = domainAgeDays;
+    const years = Math.floor(totalDays / 365);
+    const remainingDaysAfterYears = totalDays % 365;
+    const months = Math.floor(remainingDaysAfterYears / 30);
+    const days = remainingDaysAfterYears % 30;
+
+    // Very new: < 90 days - show just days
+    if (totalDays < 90) {
+      return `${totalDays}d`;
+    }
+
+    // Under 1 year: show months + days
+    if (years === 0) {
+      return days > 0 ? `${months}m ${days}d` : `${months}m`;
+    }
+
+    // 1-5 years: show years + months
+    if (years < 5) {
+      return months > 0 ? `${years}y ${months}m` : `${years}y`;
+    }
+
+    // 5+ years: just show years
+    return `${years}y`;
+  };
+
+  const getDomainAgeLabel = () => {
+    if (domainAgeDays !== null && domainAgeDays < 90) return "Very New";
+    if (domainAgeYears !== null && domainAgeYears < 1) return "New";
+    if (domainAgeYears !== null && domainAgeYears < 2) return "Recent";
+    if (domainAgeYears !== null && domainAgeYears >= 5) return "Established";
+    return "Active";
+  };
+
+  // Format registration date elegantly
+  const formatRegistrationDate = () => {
+    if (!registrationDate) return null;
+    const date = new Date(registrationDate);
+    return format(date, "MMM d, yyyy");
+  };
+
+  const getDomainAgeBgColor = () => {
+    if (domainAgeDays !== null && domainAgeDays < 90) return "bg-destructive/10 border-destructive/20";
+    if (domainAgeYears !== null && domainAgeYears < 1) return "bg-orange-500/10 border-orange-500/20";
+    if (domainAgeYears !== null && domainAgeYears >= 5) return "bg-success/10 border-success/20";
+    return "bg-muted/30";
+  };
+
+  const getDomainAgeTextColor = () => {
+    if (domainAgeDays !== null && domainAgeDays < 90) return "text-destructive";
+    if (domainAgeYears !== null && domainAgeYears < 1) return "text-orange-500";
+    if (domainAgeYears !== null && domainAgeYears >= 5) return "text-success";
+    return "text-foreground";
+  };
+
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <CardTitle>Summary</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <CardDivider />
-
+      <CardContent className="pt-6">
         {/* Key Scores Row */}
-        <div className="grid grid-cols-3 gap-4">
-          <div className={`rounded-lg p-4 ${riskScore !== null ? getScoreBgColorSubtle(riskScore) : "bg-muted/50"}`}>
-            <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <div className={`rounded-xl p-4 border ${riskScore !== null ? getScoreBgColorSubtle(riskScore) : "bg-muted/30"}`}>
+            <p className="text-xs font-medium text-muted-foreground mb-1 flex items-center gap-1 uppercase tracking-wide">
               <AlertTriangle className="h-3 w-3" />
               Risk Score
             </p>
             {riskScore !== null ? (
-              <p className={`text-3xl font-bold ${getScoreTextColor(riskScore)}`}>{riskScore}</p>
+              <div className="flex items-baseline gap-2">
+                <p className={`text-3xl font-bold tabular-nums ${getScoreTextColor(riskScore)}`}>{riskScore}</p>
+                <p className={`text-sm ${getScoreTextColor(riskScore)}`}>{getRiskLabel(riskScore)}</p>
+              </div>
             ) : (
               <p className="text-2xl font-bold text-muted-foreground">—</p>
             )}
           </div>
-          <div className={`rounded-lg p-4 ${aiScore !== null ? getScoreBgColorSubtle(aiScore) : "bg-muted/50"}`}>
-            <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+          <div className={`rounded-xl p-4 border ${aiScore !== null ? getScoreBgColorSubtle(aiScore) : "bg-muted/30"}`}>
+            <p className="text-xs font-medium text-muted-foreground mb-1 flex items-center gap-1 uppercase tracking-wide">
               <Bot className="h-3 w-3" />
               AI Score
             </p>
             {aiScore !== null ? (
-              <p className={`text-3xl font-bold ${getScoreTextColor(aiScore)}`}>{aiScore}</p>
+              <div className="flex items-baseline gap-2">
+                <p className={`text-3xl font-bold tabular-nums ${getScoreTextColor(aiScore)}`}>{aiScore}</p>
+                <p className={`text-sm ${getScoreTextColor(aiScore)}`}>{getAiLikelihoodLabel(aiScore)}</p>
+              </div>
             ) : (
               <p className="text-2xl font-bold text-muted-foreground">—</p>
             )}
           </div>
-          <div className="rounded-lg p-4 bg-muted/50">
-            <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+          <div className={`rounded-xl p-4 border ${rdapAvailable ? getDomainAgeBgColor() : "bg-muted/30"}`}>
+            <p className="text-xs font-medium text-muted-foreground mb-1 flex items-center gap-1 uppercase tracking-wide">
+              <Calendar className="h-3 w-3" />
+              Domain Age
+            </p>
+            {rdapAvailable && domainAgeYears !== null ? (
+              <div className="space-y-1">
+                <p className={`text-3xl font-bold tabular-nums ${getDomainAgeTextColor()}`}>
+                  {domainAgeYears.toFixed(1)} <span className="text-lg font-medium">years</span>
+                </p>
+                {registrationDate && (
+                  <p className="text-xs text-muted-foreground">
+                    <span className="opacity-70">Since</span>{" "}
+                    <span className="font-medium text-foreground/80">{formatRegistrationDate()}</span>
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-2xl font-bold text-muted-foreground" title={!rdapAvailable ? "RDAP lookup not available for this TLD" : "No data"}>—</p>
+            )}
+          </div>
+          <div className="rounded-xl p-4 border bg-muted/30">
+            <p className="text-xs font-medium text-muted-foreground mb-1 flex items-center gap-1 uppercase tracking-wide">
               <ShoppingCart className="h-3 w-3" />
               Detected SKUs
             </p>
             <HomepageSkuCountClient domainId={domain.id} initialScanStatus={latestScan?.status} />
-          </div>
-        </div>
-
-        <CardDivider />
-
-        {/* Domain Info Row */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div>
-            <p className="text-sm text-muted-foreground mb-1">Domain</p>
-            <p className="font-medium">{domain.normalizedUrl}</p>
-          </div>
-          <div>
-            <p className="text-sm text-muted-foreground mb-1">Status</p>
-            <ScanStatusBadge
-              domainId={domain.id}
-              initialIsActive={domain.isActive}
-              initialStatusCode={domain.statusCode}
-              initialScanStatus={latestScan?.status ?? null}
-              initialScanCreatedAt={latestScan?.createdAt?.toISOString() ?? null}
-            />
-          </div>
-          <div>
-            <p className="text-sm text-muted-foreground mb-1">Last Scanned</p>
-            <p className="font-medium text-sm">
-              {domain.lastCheckedAt
-                ? format(new Date(domain.lastCheckedAt), "PPp")
-                : "Never"}
-            </p>
-          </div>
-          <div>
-            <p className="text-sm text-muted-foreground mb-1">Total Scans</p>
-            <p className="font-medium text-sm">{domain.scans.length}</p>
           </div>
         </div>
       </CardContent>

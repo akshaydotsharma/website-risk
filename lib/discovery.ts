@@ -7,7 +7,6 @@ import {
   closeBrowser,
   findContactLinksWithBrowser,
 } from "./browser";
-import { extractDomainFromInput } from "./utils";
 
 export interface FetchResult {
   url: string;
@@ -34,57 +33,34 @@ export interface RobotRules {
   crawlDelay: number | null;
 }
 
-const DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; WebsiteRiskIntel/1.0)";
+const DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const DEFAULT_TIMEOUT = 10000;
 
+// Default crawling configuration - all domains are authorized
+const DEFAULT_CRAWL_CONFIG = {
+  allowSubdomains: true,
+  respectRobots: true,
+  maxPagesPerScan: 50,
+  crawlDelayMs: 1000,
+};
+
 /**
- * Check if a domain is authorized for crawling
+ * Check if a domain is authorized for crawling.
+ * All domains are now authorized by default with standard thresholds.
  */
-export async function isDomainAuthorized(domain: string): Promise<{
+export async function isDomainAuthorized(_domain: string): Promise<{
   authorized: boolean;
   config: {
     allowSubdomains: boolean;
     respectRobots: boolean;
     maxPagesPerScan: number;
     crawlDelayMs: number;
-  } | null;
+  };
 }> {
-  // Clean the domain first to ensure consistent matching
-  const cleanedDomain = extractDomainFromInput(domain);
-
-  // Extract base domain for checking
-  const domainParts = cleanedDomain.split(".");
-  const baseDomain = domainParts.length > 2
-    ? domainParts.slice(-2).join(".")
-    : cleanedDomain;
-
-  // Check for exact domain match first
-  let authDomain = await prisma.authorizedDomain.findUnique({
-    where: { domain: cleanedDomain },
-  });
-
-  // If not found, check for base domain with subdomain allowance
-  if (!authDomain && cleanedDomain !== baseDomain) {
-    authDomain = await prisma.authorizedDomain.findUnique({
-      where: { domain: baseDomain },
-    });
-    if (authDomain && !authDomain.allowSubdomains) {
-      authDomain = null;
-    }
-  }
-
-  if (!authDomain) {
-    return { authorized: false, config: null };
-  }
-
+  // All domains are authorized with default config
   return {
     authorized: true,
-    config: {
-      allowSubdomains: authDomain.allowSubdomains,
-      respectRobots: authDomain.respectRobots,
-      maxPagesPerScan: authDomain.maxPagesPerScan,
-      crawlDelayMs: authDomain.crawlDelayMs,
-    },
+    config: DEFAULT_CRAWL_CONFIG,
   };
 }
 
@@ -262,6 +238,41 @@ export async function fetchWithLogging(
 
   result.fetchDurationMs = Date.now() - startTime;
 
+  // Browser fallback for homepage when HTTP fails (handles SSL issues, bot protection)
+  if (!result.content && source === "homepage") {
+    const errorMsg = result.errorMessage?.toLowerCase() || "";
+    const isSSLError = errorMsg.includes("ssl") ||
+                       errorMsg.includes("tls") ||
+                       errorMsg.includes("certificate") ||
+                       errorMsg.includes("dh key") ||
+                       errorMsg.includes("fetch failed");
+    const isBotProtection = result.statusCode === 403 || result.statusCode === 503;
+
+    if (isSSLError || isBotProtection) {
+      console.log(`[Discovery] HTTP failed for homepage, trying browser fallback...`);
+      try {
+        const browserResult = await fetchWithBrowser(
+          scanId,
+          url,
+          "homepage_browser",
+          { ignoreHTTPSErrors: true, timeout: 15000 }
+        );
+
+        if (browserResult.content) {
+          result.content = browserResult.content;
+          result.statusCode = browserResult.statusCode;
+          result.contentType = browserResult.contentType;
+          result.contentLength = browserResult.content.length;
+          result.errorMessage = null;
+          result.fetchDurationMs = Date.now() - startTime;
+          console.log(`[Discovery] Browser fallback succeeded for homepage`);
+        }
+      } catch (browserError) {
+        console.error(`[Discovery] Browser fallback also failed:`, browserError);
+      }
+    }
+  }
+
   // Log the request
   await prisma.crawlFetchLog.create({
     data: {
@@ -388,17 +399,17 @@ export async function runDiscoveryPipeline(
 
   const sitemapDiscoveredUrls: string[] = [];
 
-  for (const sitemapUrl of sitemapUrls.slice(0, 3)) { // Limit to 3 sitemaps
-    await delay(config.crawlDelayMs);
+  // Fetch sitemaps concurrently (up to 3 at once)
+  const sitemapsToFetch = sitemapUrls.slice(0, 3);
+  const sitemapResults = await Promise.all(
+    sitemapsToFetch.map((sitemapUrl) =>
+      fetchWithLogging(scanId, sitemapUrl, "sitemap", robotsRules, config.respectRobots)
+    )
+  );
 
-    const sitemapResult = await fetchWithLogging(
-      scanId,
-      sitemapUrl,
-      "sitemap",
-      robotsRules,
-      config.respectRobots
-    );
-
+  // Process sitemap results and collect child sitemaps
+  const childSitemapsToFetch: string[] = [];
+  for (const sitemapResult of sitemapResults) {
     if (sitemapResult.content) {
       const extractedUrls = parseSitemap(sitemapResult.content, baseUrl);
 
@@ -406,25 +417,28 @@ export async function runDiscoveryPipeline(
       const isSitemapIndex = extractedUrls.some(u => u.includes("sitemap") && u.endsWith(".xml"));
 
       if (isSitemapIndex) {
-        // Fetch child sitemaps
-        for (const childSitemapUrl of extractedUrls.slice(0, 2)) {
-          await delay(config.crawlDelayMs);
-
-          const childResult = await fetchWithLogging(
-            scanId,
-            childSitemapUrl,
-            "sitemap",
-            robotsRules,
-            config.respectRobots
-          );
-
-          if (childResult.content) {
-            const childUrls = parseSitemap(childResult.content, baseUrl);
-            sitemapDiscoveredUrls.push(...childUrls);
-          }
-        }
+        // Queue child sitemaps for fetching
+        childSitemapsToFetch.push(...extractedUrls.slice(0, 2));
       } else {
         sitemapDiscoveredUrls.push(...extractedUrls);
+      }
+    }
+  }
+
+  // Fetch child sitemaps concurrently (if any)
+  if (childSitemapsToFetch.length > 0) {
+    await delay(config.crawlDelayMs); // Single delay before child batch
+
+    const childResults = await Promise.all(
+      childSitemapsToFetch.slice(0, 5).map((childSitemapUrl) =>
+        fetchWithLogging(scanId, childSitemapUrl, "sitemap", robotsRules, config.respectRobots)
+      )
+    );
+
+    for (const childResult of childResults) {
+      if (childResult.content) {
+        const childUrls = parseSitemap(childResult.content, baseUrl);
+        sitemapDiscoveredUrls.push(...childUrls);
       }
     }
   }
@@ -450,26 +464,44 @@ export async function runDiscoveryPipeline(
   // Deduplicate
   const uniquePages = [...new Set(pagesToCrawl)].slice(0, config.maxPagesPerScan);
 
-  for (const pageUrl of uniquePages) {
-    await delay(config.crawlDelayMs);
+  // Fetch pages in batches with concurrency control (5 concurrent requests)
+  // This reduces 50 pages from 50*1000ms = 50s to 10*1000ms = 10s
+  const PAGE_BATCH_SIZE = 5;
+  for (let i = 0; i < uniquePages.length; i += PAGE_BATCH_SIZE) {
+    // Delay between batches (skip delay for first batch)
+    if (i > 0) {
+      await delay(config.crawlDelayMs);
+    }
 
-    const source = pageUrl === url ? "homepage" :
-                   pageUrl.toLowerCase().includes("contact") ? "contact_page" : "crawl";
+    const batch = uniquePages.slice(i, i + PAGE_BATCH_SIZE);
 
-    const pageResult = await fetchWithLogging(
-      scanId,
-      pageUrl,
-      source,
-      robotsRules,
-      config.respectRobots
+    // Fetch all pages in this batch concurrently
+    const batchResults = await Promise.all(
+      batch.map(async (pageUrl) => {
+        const source = pageUrl === url ? "homepage" :
+                       pageUrl.toLowerCase().includes("contact") ? "contact_page" : "crawl";
+
+        const pageResult = await fetchWithLogging(
+          scanId,
+          pageUrl,
+          source,
+          robotsRules,
+          config.respectRobots
+        );
+
+        return { pageUrl, pageResult };
+      })
     );
 
-    if (pageResult.content) {
-      result.crawledPages.set(pageUrl, pageResult.content);
+    // Process batch results
+    for (const { pageUrl, pageResult } of batchResults) {
+      if (pageResult.content) {
+        result.crawledPages.set(pageUrl, pageResult.content);
 
-      // Extract links for further discovery (but don't crawl them this run)
-      const links = extractLinksFromHtml(pageResult.content, pageUrl);
-      result.discoveredUrls.push(...links);
+        // Extract links for further discovery (but don't crawl them this run)
+        const links = extractLinksFromHtml(pageResult.content, pageUrl);
+        result.discoveredUrls.push(...links);
+      }
     }
   }
 
@@ -603,49 +635,3 @@ export async function getCrawlLogs(scanId: string) {
   });
 }
 
-/**
- * Get all authorized domains
- */
-export async function getAuthorizedDomains() {
-  return prisma.authorizedDomain.findMany({
-    orderBy: { domain: "asc" },
-  });
-}
-
-/**
- * Add an authorized domain
- */
-export async function addAuthorizedDomain(data: {
-  domain: string;
-  allowSubdomains?: boolean;
-  respectRobots?: boolean;
-  maxPagesPerScan?: number;
-  crawlDelayMs?: number;
-  notes?: string;
-}) {
-  // Clean the domain to ensure consistent storage
-  const cleanedDomain = extractDomainFromInput(data.domain);
-
-  return prisma.authorizedDomain.create({
-    data: {
-      domain: cleanedDomain,
-      allowSubdomains: data.allowSubdomains ?? true,
-      respectRobots: data.respectRobots ?? true,
-      maxPagesPerScan: data.maxPagesPerScan ?? 50,
-      crawlDelayMs: data.crawlDelayMs ?? 1000,
-      notes: data.notes,
-    },
-  });
-}
-
-/**
- * Remove an authorized domain
- */
-export async function removeAuthorizedDomain(domain: string) {
-  // Clean the domain to ensure consistent matching
-  const cleanedDomain = extractDomainFromInput(domain);
-
-  return prisma.authorizedDomain.delete({
-    where: { domain: cleanedDomain },
-  });
-}
