@@ -3,27 +3,31 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  SortableTableHead,
-  SortDirection,
-} from "@/components/ui/sortable-table-head";
+import { Input } from "@/components/ui/input";
+import { ScoreRing } from "@/components/score-ring";
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatDistanceToNow } from "date-fns";
-import { History, Eye, RefreshCw, Trash2, Loader2, Bot, ShieldAlert } from "lucide-react";
-import { getScoreTextColor, getScoreBgColor } from "@/lib/utils";
+import {
+  Eye,
+  RefreshCw,
+  Trash2,
+  Loader2,
+  Bot,
+  ShieldAlert,
+  Search,
+  ArrowUpDown,
+  ChevronRight,
+  Globe,
+  AlertTriangle,
+  Info,
+  Check,
+  X as XIcon,
+} from "lucide-react";
+import { getScoreTextColor, getScoreBgColor, getRiskLabel } from "@/lib/utils";
 
 interface DataPoint {
   id: string;
@@ -37,6 +41,7 @@ interface Scan {
   status: string; // "pending" | "processing" | "completed" | "failed"
   error: string | null;
   createdAt: string;
+  updatedAt?: string;
 }
 
 interface Domain {
@@ -47,6 +52,7 @@ interface Domain {
   lastCheckedAt: string | null;
   createdAt: string;
   dataPoints: DataPoint[];
+  screenshotCount: number;
   scanCount: number;
   scans: Scan[];
   recentInputs: {
@@ -58,11 +64,15 @@ interface Domain {
 
 interface ScanHistoryTableProps {
   domains: Domain[];
+  selected: Set<string>;
+  onSelectionChange: (selected: Set<string>) => void;
   onDomainDeleted?: (domainId: string) => void;
   onRefresh?: () => void;
+  totalDomainCount?: number;
+  onSortChange?: (field: SortField, direction: "asc" | "desc") => void;
 }
 
-type SortField = "normalizedUrl" | "isActive" | "lastCheckedAt" | "createdAt";
+type SortField = "normalizedUrl" | "isActive" | "lastUpdatedAt" | "createdAt" | "riskScore";
 
 const SORT_FIELD_KEY = "scans_sort_field";
 const SORT_DIRECTION_KEY = "scans_sort_direction";
@@ -74,7 +84,6 @@ function hasContactDetails(dataPoints: DataPoint[]): boolean {
 
   try {
     const value = JSON.parse(contactDataPoint.value);
-    // Check if there's any meaningful contact information
     return Boolean(
       (value.emails && value.emails.length > 0) ||
       (value.phone_numbers && value.phone_numbers.length > 0) ||
@@ -115,7 +124,6 @@ function getRiskScore(dataPoints: DataPoint[]): {
 
   try {
     const value = JSON.parse(riskDataPoint.value);
-    // Support both new schema (risk_type_scores.shell_company) and any legacy data
     const riskTypeScores = value.risk_type_scores || {};
     return {
       overallScore: value.overall_risk_score ?? null,
@@ -130,10 +138,7 @@ function getRiskScore(dataPoints: DataPoint[]): {
   }
 }
 
-
 // Helper to check if domain has an in-progress scan
-// Only consider "pending" or "processing" if the scan was created recently (within 5 minutes)
-// This handles legacy scans that were created before the status field existed
 function isScanning(domain: Domain): boolean {
   const latestScan = domain.scans?.[0];
   if (!latestScan) return false;
@@ -141,17 +146,25 @@ function isScanning(domain: Domain): boolean {
   const status = latestScan.status;
   if (status === "completed" || status === "failed") return false;
 
-  // For pending/processing, check if scan is recent (within 5 minutes)
-  const scanAge = Date.now() - new Date(latestScan.createdAt).getTime();
-  const fiveMinutes = 5 * 60 * 1000;
+  return status === "pending" || status === "processing";
+}
 
-  return (status === "pending" || status === "processing") && scanAge < fiveMinutes;
+// Helper to check if a scan is stalled (processing > 20 min since last update)
+function isStalled(domain: Domain): boolean {
+  const latestScan = domain.scans?.[0];
+  if (!latestScan) return false;
+
+  const status = latestScan.status;
+  if (status !== "pending" && status !== "processing") return false;
+
+  // Use updatedAt if available (reflects last status change), fallback to createdAt
+  const lastUpdate = (latestScan as any).updatedAt || latestScan.createdAt;
+  const sinceUpdate = Date.now() - new Date(lastUpdate).getTime();
+  return sinceUpdate > 20 * 60 * 1000;
 }
 
 // Helper to check if domain has meaningful scan data
 function hasMeaningfulData(dataPoints: DataPoint[]): boolean {
-  // Check for key data points that indicate a successful scan
-  // Any extracted data means the scan at least partially succeeded
   const meaningfulKeys = [
     'domain_risk_assessment',
     'ai_generated_likelihood',
@@ -164,11 +177,9 @@ function hasMeaningfulData(dataPoints: DataPoint[]): boolean {
 }
 
 // Helper to get effective scan status
-// A scan is considered successful if it has meaningful data, even if status says "failed"
 function getEffectiveScanStatus(domain: Domain): "completed" | "failed" | "pending" | "processing" | null {
   const rawStatus = domain.scans?.[0]?.status ?? null;
 
-  // If status is failed but we have meaningful data, treat as completed
   if (rawStatus === "failed" && hasMeaningfulData(domain.dataPoints)) {
     return "completed";
   }
@@ -176,13 +187,73 @@ function getEffectiveScanStatus(domain: Domain): "completed" | "failed" | "pendi
   return rawStatus as "completed" | "failed" | "pending" | "processing" | null;
 }
 
-export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHistoryTableProps) {
+// Helper to get scan summary checklist
+function getScanSummary(domain: Domain) {
+  const dp = domain.dataPoints;
+
+  const hasContact = (() => {
+    const cdp = dp.find((d) => d.key === "contact_details");
+    if (!cdp) return false;
+    try {
+      const v = JSON.parse(cdp.value);
+      return Boolean(v.emails?.length || v.phone_numbers?.length || v.addresses?.length);
+    } catch { return false; }
+  })();
+
+  const hasAbout = (() => {
+    const adp = dp.find((d) => d.key === "about_page");
+    if (!adp) return false;
+    try {
+      const v = JSON.parse(adp.value);
+      return !!v.text_content && v.text_content.length > 50;
+    } catch { return false; }
+  })();
+
+  const hasPolicy = dp.some((d) => d.key === "policy_links");
+
+  const hasSku = (() => {
+    const sdp = dp.find((d) => d.key === "homepage_sku_summary");
+    if (!sdp) return false;
+    try {
+      const v = JSON.parse(sdp.value);
+      return (v.sku_count ?? 0) > 0;
+    } catch { return false; }
+  })();
+
+  const hasScreenshot = domain.screenshotCount > 0;
+
+  const domainAge = (() => {
+    const sdp = dp.find((d) => d.key === "domain_intel_signals");
+    if (!sdp) return null;
+    try {
+      const v = JSON.parse(sdp.value);
+      if (v.domain_age_years != null) {
+        return v.domain_age_years < 1
+          ? `${v.domain_age_days ?? 0} days`
+          : `${v.domain_age_years.toFixed(1)} years`;
+      }
+      return null;
+    } catch { return null; }
+  })();
+
+  return { hasContact, hasAbout, hasPolicy, hasSku, hasScreenshot, domainAge };
+}
+
+// Format primary risk type for display
+function formatRiskType(type: string | null): string {
+  if (!type) return "Unknown";
+  if (type === "shell_company") return "Shell Company";
+  return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+export function ScanHistoryTable({ domains, selected, onSelectionChange, onDomainDeleted, onRefresh, totalDomainCount, onSortChange }: ScanHistoryTableProps) {
   const router = useRouter();
-  const [sortField, setSortField] = useState<SortField>("lastCheckedAt");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [sortField, setSortField] = useState<SortField>("lastUpdatedAt");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [isLoading, setIsLoading] = useState(true);
   const [rescanning, setRescanning] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Poll for updates when there are in-progress scans
   useEffect(() => {
@@ -191,7 +262,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
 
     const interval = setInterval(() => {
       onRefresh();
-    }, 3000); // Poll every 3 seconds
+    }, 3000);
 
     return () => clearInterval(interval);
   }, [domains, onRefresh]);
@@ -209,10 +280,20 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
         const directionData = await directionRes.json();
 
         if (fieldData.preference?.value) {
-          setSortField(fieldData.preference.value as SortField);
+          // Migrate old preference name
+          const field = fieldData.preference.value === "lastCheckedAt" ? "lastUpdatedAt" : fieldData.preference.value;
+          setSortField(field as SortField);
+          // Persist migrated value
+          if (field !== fieldData.preference.value) {
+            fetch("/api/preferences", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ key: SORT_FIELD_KEY, value: field }),
+            }).catch(() => {});
+          }
         }
         if (directionData.preference?.value) {
-          setSortDirection(directionData.preference.value as SortDirection);
+          setSortDirection(directionData.preference.value as "asc" | "desc");
         }
       } catch (error) {
         console.error("Failed to load sort preferences:", error);
@@ -237,30 +318,32 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
     }
   }, []);
 
-  // Handle sort column click
+  // Handle sort
   const handleSort = useCallback(
-    (field: string) => {
-      const newField = field as SortField;
-
-      if (sortField === newField) {
-        // Toggle direction if same field
-        const newDirection = sortDirection === "asc" ? "desc" : "asc";
-        setSortDirection(newDirection);
-        savePreference(SORT_DIRECTION_KEY, newDirection);
-      } else {
-        // New field, default to descending
-        setSortField(newField);
-        setSortDirection("desc");
-        savePreference(SORT_FIELD_KEY, newField);
-        savePreference(SORT_DIRECTION_KEY, "desc");
+    (field: SortField) => {
+      let newField = field;
+      let newDirection: "asc" | "desc" = "desc";
+      if (sortField === field) {
+        newDirection = sortDirection === "asc" ? "desc" : "asc";
       }
+      setSortField(newField);
+      setSortDirection(newDirection);
+      savePreference(SORT_FIELD_KEY, newField);
+      savePreference(SORT_DIRECTION_KEY, newDirection);
+      onSortChange?.(newField, newDirection);
     },
-    [sortField, sortDirection, savePreference]
+    [sortField, sortDirection, savePreference, onSortChange]
   );
 
-  // Sort the domains
-  const sortedDomains = useMemo(() => {
-    const sorted = [...domains].sort((a, b) => {
+  // Filter and sort the domains
+  const filteredAndSortedDomains = useMemo(() => {
+    let filtered = domains;
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      filtered = domains.filter((d) => d.normalizedUrl.toLowerCase().includes(q));
+    }
+
+    const sorted = [...filtered].sort((a, b) => {
       let comparison = 0;
 
       switch (sortField) {
@@ -268,17 +351,22 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
           comparison = a.normalizedUrl.localeCompare(b.normalizedUrl);
           break;
         case "isActive":
-          // Active first when ascending
           comparison = Number(a.isActive) - Number(b.isActive);
           break;
-        case "lastCheckedAt":
-          const aTime = a.lastCheckedAt ? new Date(a.lastCheckedAt).getTime() : 0;
-          const bTime = b.lastCheckedAt ? new Date(b.lastCheckedAt).getTime() : 0;
+        case "riskScore": {
+          const aRisk = getRiskScore(a.dataPoints).overallScore ?? -1;
+          const bRisk = getRiskScore(b.dataPoints).overallScore ?? -1;
+          comparison = aRisk - bRisk;
+          break;
+        }
+        case "lastUpdatedAt": {
+          const aTime = new Date(a.scans?.[0]?.updatedAt || a.lastCheckedAt || 0).getTime();
+          const bTime = new Date(b.scans?.[0]?.updatedAt || b.lastCheckedAt || 0).getTime();
           comparison = aTime - bTime;
           break;
+        }
         case "createdAt":
-          comparison =
-            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+          comparison = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
           break;
         default:
           comparison = 0;
@@ -288,7 +376,7 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
     });
 
     return sorted;
-  }, [domains, sortField, sortDirection]);
+  }, [domains, sortField, sortDirection, searchQuery]);
 
   const handleRescan = useCallback(async (e: React.MouseEvent, domainId: string) => {
     e.stopPropagation();
@@ -327,345 +415,357 @@ export function ScanHistoryTable({ domains, onDomainDeleted, onRefresh }: ScanHi
     }
   }, [onDomainDeleted]);
 
-  const handleView = useCallback((e: React.MouseEvent, domainId: string) => {
-    e.stopPropagation();
-    router.push(`/scans/${domainId}`);
-  }, [router]);
-
   if (isLoading) {
     return (
-      <div className="border rounded-xl bg-card overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <TableHead>Website URL</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="whitespace-nowrap">AI</TableHead>
-              <TableHead className="whitespace-nowrap">Risk</TableHead>
-              <TableHead className="whitespace-nowrap">Last Scanned</TableHead>
-              <TableHead className="whitespace-nowrap">Created</TableHead>
-              <TableHead className="text-right whitespace-nowrap">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {Array.from({ length: 5 }).map((_, i) => (
-              <TableRow key={i}>
-                <TableCell><div className="h-4 w-32 bg-muted animate-pulse rounded" /></TableCell>
-                <TableCell><div className="h-5 w-16 bg-muted animate-pulse rounded-full" /></TableCell>
-                <TableCell><div className="h-4 w-8 bg-muted animate-pulse rounded" /></TableCell>
-                <TableCell><div className="h-4 w-8 bg-muted animate-pulse rounded" /></TableCell>
-                <TableCell><div className="h-4 w-20 bg-muted animate-pulse rounded" /></TableCell>
-                <TableCell><div className="h-4 w-20 bg-muted animate-pulse rounded" /></TableCell>
-                <TableCell><div className="h-4 w-16 bg-muted animate-pulse rounded ml-auto" /></TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+      <div className="space-y-4">
+        {/* Search skeleton */}
+        <div className="h-10 bg-muted/50 rounded-lg animate-pulse" />
+        {/* Card skeletons */}
+        <div className="grid gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="domain-card animate-pulse">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 rounded-full bg-muted" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-4 w-40 bg-muted rounded" />
+                  <div className="h-3 w-24 bg-muted/60 rounded" />
+                </div>
+                <div className="h-6 w-16 bg-muted rounded-full" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="border rounded-xl bg-card overflow-hidden">
-      <Table>
-        <TableHeader>
-          <TableRow className="hover:bg-transparent">
-            <SortableTableHead
-              sortKey="normalizedUrl"
-              currentSortKey={sortField}
-              currentSortDirection={sortDirection}
-              onSort={handleSort}
-            >
-              Website URL
-            </SortableTableHead>
-            <SortableTableHead
-              sortKey="isActive"
-              currentSortKey={sortField}
-              currentSortDirection={sortDirection}
-              onSort={handleSort}
-            >
-              Status
-            </SortableTableHead>
-            <TableHead className="w-[90px] whitespace-nowrap">
-              <div className="flex items-center gap-1">
-                <Bot className="h-3 w-3 flex-shrink-0" />
-                AI
-              </div>
-            </TableHead>
-            <TableHead className="w-[90px] whitespace-nowrap">
-              <div className="flex items-center gap-1">
-                <ShieldAlert className="h-3 w-3 flex-shrink-0" />
-                Risk
-              </div>
-            </TableHead>
-            <SortableTableHead
-              sortKey="lastCheckedAt"
-              currentSortKey={sortField}
-              currentSortDirection={sortDirection}
-              onSort={handleSort}
-              className="whitespace-nowrap"
-            >
-              Last Scanned
-            </SortableTableHead>
-            <SortableTableHead
-              sortKey="createdAt"
-              currentSortKey={sortField}
-              currentSortDirection={sortDirection}
-              onSort={handleSort}
-              className="whitespace-nowrap"
-            >
-              Created
-            </SortableTableHead>
-            <TableHead className="text-right whitespace-nowrap w-[120px]">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {sortedDomains.map((domain) => {
-            const hasContacts = hasContactDetails(domain.dataPoints);
-            return (
-              <TableRow
-                key={domain.id}
-                className="cursor-pointer group/row"
-                onClick={(e) => {
-                  // Don't navigate if clicking on interactive elements
-                  const target = e.target as HTMLElement;
-                  if (
-                    target.closest("a") ||
-                    target.closest("button") ||
-                    target.closest("[data-interactive]")
-                  ) {
-                    return;
-                  }
-                  router.push(`/scans/${domain.id}`);
+    <div className="space-y-4">
+      {/* Search Bar */}
+      <div className="relative max-w-sm">
+        <Search
+          className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <Input
+          type="text"
+          placeholder="Search domains\u2026"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          aria-label="Search scanned domains"
+          className="pl-9 h-10 bg-card"
+        />
+      </div>
+
+      {/* Results count */}
+      {searchQuery.trim() && (
+        <p className="text-xs text-muted-foreground">
+          {filteredAndSortedDomains.length} {filteredAndSortedDomains.length === 1 ? "result" : "results"} for &ldquo;{searchQuery}&rdquo;
+        </p>
+      )}
+
+      {/* Column Headers — sortable */}
+      <div className="flex items-center gap-0 pr-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+        {/* Select All checkbox — aligned with row checkboxes */}
+        <div
+          className="shrink-0 w-10 flex items-center justify-center cursor-pointer"
+          onClick={async () => {
+            const total = totalDomainCount ?? filteredAndSortedDomains.length;
+            if (selected.size >= total) {
+              // All selected → deselect all
+              onSelectionChange(new Set());
+            } else {
+              // Fetch all domain IDs across all pages
+              try {
+                const res = await fetch("/api/domains/ids");
+                if (res.ok) {
+                  const data = await res.json();
+                  onSelectionChange(new Set(data.ids));
+                }
+              } catch {
+                // Fallback: select visible only
+                onSelectionChange(new Set(filteredAndSortedDomains.map((d) => d.id)));
+              }
+            }
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={(totalDomainCount ?? filteredAndSortedDomains.length) > 0 && selected.size >= (totalDomainCount ?? filteredAndSortedDomains.length)}
+            ref={(el) => {
+              if (el) {
+                const total = totalDomainCount ?? filteredAndSortedDomains.length;
+                el.indeterminate = selected.size > 0 && selected.size < total;
+              }
+            }}
+            readOnly
+            className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 cursor-pointer pointer-events-none"
+            aria-label="Select all domains"
+          />
+        </div>
+        <div className="flex items-center gap-4 flex-1 pl-4 sm:pl-5">
+        <button
+          className={`w-14 shrink-0 text-center cursor-pointer hover:text-foreground transition-colors ${sortField === "riskScore" ? "text-primary" : ""}`}
+          onClick={() => handleSort("riskScore")}
+        >
+          Score <span className="text-[10px]">{sortField === "riskScore" ? (sortDirection === "desc" ? "↓" : "↑") : "↕"}</span>
+        </button>
+        <button
+          className={`flex-1 min-w-0 text-left cursor-pointer hover:text-foreground transition-colors ${sortField === "normalizedUrl" ? "text-primary" : ""}`}
+          onClick={() => handleSort("normalizedUrl")}
+        >
+          URL <span className="text-[10px]">{sortField === "normalizedUrl" ? (sortDirection === "desc" ? "↓" : "↑") : "↕"}</span>
+        </button>
+        <button
+          className={`w-20 shrink-0 text-left cursor-pointer hover:text-foreground transition-colors ${sortField === "isActive" ? "text-primary" : ""}`}
+          onClick={() => handleSort("isActive")}
+        >
+          Status <span className="text-[10px]">{sortField === "isActive" ? (sortDirection === "desc" ? "↓" : "↑") : "↕"}</span>
+        </button>
+        <button
+          className={`w-32 shrink-0 text-left cursor-pointer hover:text-foreground transition-colors ${sortField === "lastUpdatedAt" ? "text-primary" : ""}`}
+          onClick={() => handleSort("lastUpdatedAt")}
+        >
+          Last Updated <span className="text-[10px]">{sortField === "lastUpdatedAt" ? (sortDirection === "desc" ? "↓" : "↑") : "↕"}</span>
+        </button>
+        <div className="w-24 shrink-0" />
+        </div>
+      </div>
+
+      {/* Domain Cards Grid */}
+      <div className="grid gap-3">
+        {filteredAndSortedDomains.map((domain) => {
+          const risk = getRiskScore(domain.dataPoints);
+          const ai = getAiScore(domain.dataPoints);
+          const hasContacts = hasContactDetails(domain.dataPoints);
+          const scanning = isScanning(domain);
+          const effectiveStatus = getEffectiveScanStatus(domain);
+          const summary = getScanSummary(domain);
+
+          return (
+            <div key={domain.id} className="flex items-center gap-0">
+              {/* Checkbox — outside the clickable card */}
+              <div
+                className="shrink-0 w-10 flex items-center justify-center self-stretch cursor-pointer"
+                onClick={() => {
+                  const next = new Set(selected);
+                  if (next.has(domain.id)) next.delete(domain.id);
+                  else next.add(domain.id);
+                  onSelectionChange(next);
                 }}
               >
-                <TableCell className="font-medium">
-                  <div className="flex items-center gap-2">
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div
-                            className={`w-2 h-2 rounded-full shrink-0 ${
-                              hasContacts ? "bg-success" : "bg-muted-foreground/30"
-                            }`}
-                            data-interactive
-                          />
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {hasContacts ? "Has contact info" : "No contact info"}
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                    <a
-                      href={`https://${domain.normalizedUrl}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:underline text-link font-medium"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {domain.normalizedUrl}
-                    </a>
-                    {domain.recentInputs?.length > 0 && (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span
-                              className="text-muted-foreground cursor-help"
-                              data-interactive
-                            >
-                              <History className="h-3 w-3" />
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent side="right" className="max-w-xs">
-                            <div className="space-y-1">
-                              <p className="font-medium text-xs">Recent inputs:</p>
-                              {domain.recentInputs.slice(0, 3).map((input, i) => (
-                                <p key={i} className="text-xs text-muted-foreground truncate">
-                                  {input.rawInput}
-                                </p>
-                              ))}
+                <input
+                  type="checkbox"
+                  checked={selected.has(domain.id)}
+                  readOnly
+                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary/30 cursor-pointer pointer-events-none"
+                />
+              </div>
+              {/* Clickable card */}
+              <div
+                className={`domain-card group/card flex-1 ${selected.has(domain.id) ? "!border-transparent !bg-primary/5" : ""}`}
+                onClick={() => router.push(`/scans/${domain.id}`)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    router.push(`/scans/${domain.id}`);
+                  }
+                }}
+                aria-label={`View scan report for ${domain.normalizedUrl}`}
+              >
+              <div className="flex items-center gap-4">
+                {/* Score */}
+                <div className="w-14 shrink-0 flex justify-center">
+                  {risk.overallScore !== null ? (
+                    <ScoreRing
+                      score={risk.overallScore}
+                      size={42}
+                      strokeWidth={3.5}
+                    />
+                  ) : scanning ? (
+                    <div className="w-10 h-10 rounded-full bg-muted/50 flex items-center justify-center">
+                      <Loader2 className="h-4 w-4 animate-spin text-primary" aria-hidden="true" />
+                    </div>
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-muted/50 flex items-center justify-center">
+                      <Globe className="h-4 w-4 text-muted-foreground/60" aria-hidden="true" />
+                    </div>
+                  )}
+                </div>
+
+                {/* URL + Info */}
+                <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                  <a
+                    href={`https://${domain.normalizedUrl}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-semibold text-foreground hover:text-primary hover:underline truncate transition-colors duration-150"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {domain.normalizedUrl}
+                  </a>
+                  {effectiveStatus === "completed" && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          onClick={(e) => e.stopPropagation()}
+                          className="p-0.5 rounded text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
+                          aria-label="Scan summary"
+                        >
+                          <Info className="h-3.5 w-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" align="start" className="p-0 w-56">
+                        <div className="p-3 space-y-1.5 text-xs">
+                          <p className="font-semibold text-foreground text-xs mb-2">Scan Summary</p>
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground">Contact Details</span>
+                            {summary.hasContact
+                              ? <Check className="h-3.5 w-3.5 text-success" />
+                              : <XIcon className="h-3.5 w-3.5 text-muted-foreground/30" />}
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground">About Us</span>
+                            {summary.hasAbout
+                              ? <Check className="h-3.5 w-3.5 text-success" />
+                              : <XIcon className="h-3.5 w-3.5 text-muted-foreground/30" />}
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground">Policy Pages</span>
+                            {summary.hasPolicy
+                              ? <Check className="h-3.5 w-3.5 text-success" />
+                              : <XIcon className="h-3.5 w-3.5 text-muted-foreground/30" />}
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground">Homepage SKUs</span>
+                            {summary.hasSku
+                              ? <Check className="h-3.5 w-3.5 text-success" />
+                              : <XIcon className="h-3.5 w-3.5 text-muted-foreground/30" />}
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground">Screenshot</span>
+                            {summary.hasScreenshot
+                              ? <Check className="h-3.5 w-3.5 text-success" />
+                              : <XIcon className="h-3.5 w-3.5 text-muted-foreground/30" />}
+                          </div>
+                          {summary.domainAge && (
+                            <div className="flex items-center justify-between pt-1 border-t">
+                              <span className="text-muted-foreground">Domain Age</span>
+                              <span className="font-medium text-foreground">{summary.domainAge}</span>
                             </div>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  {isScanning(domain) ? (
-                    <Badge variant="secondary" className="gap-1">
-                      <Loader2 className="h-3 w-3 animate-spin" />
+                          )}
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </div>
+
+                {/* Status */}
+                <div className="w-20 shrink-0">
+                  {scanning && isStalled(domain) ? (
+                    <Badge variant="danger-subtle" className="gap-1 border-0">
+                      <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                      Stalled
+                    </Badge>
+                  ) : scanning ? (
+                    <Badge variant="info-subtle" className="gap-1 border-0">
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                       Scanning
                     </Badge>
-                  ) : getEffectiveScanStatus(domain) === "failed" ? (
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Badge variant="destructive" className="cursor-help">
-                            Failed
-                          </Badge>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p className="text-xs">{domain.scans?.[0]?.error || "Unknown error"}</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
+                  ) : effectiveStatus === "failed" ? (
+                    <Badge variant="danger-subtle" className="border-0">Failed</Badge>
                   ) : (
-                    <Badge variant={domain.isActive ? "success" : "destructive"}>
-                      {domain.isActive
-                        ? `Active (${domain.statusCode})`
-                        : "Inactive"}
+                    <Badge
+                      variant={domain.isActive ? "success-subtle" : "danger-subtle"}
+                      className="border-0"
+                    >
+                      {domain.isActive ? "Active" : "Inactive"}
                     </Badge>
                   )}
-                </TableCell>
-                <TableCell>
-                  {(() => {
-                    const { score, confidence } = getAiScore(domain.dataPoints);
-                    if (score === null) {
-                      return <span className="text-muted-foreground text-xs">-</span>;
-                    }
-                    return (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div className="flex items-center gap-2" data-interactive>
-                              <span className={`font-bold text-sm ${getScoreTextColor(score)}`}>
-                                {score}
-                              </span>
-                              <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full ${getScoreBgColor(score)}`}
-                                  style={{ width: `${score}%` }}
-                                />
-                              </div>
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <div className="text-xs">
-                              <p>AI-generated likelihood: {score}/100</p>
-                              <p className="text-muted-foreground">
-                                Confidence: {confidence}%
-                              </p>
-                            </div>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    );
-                  })()}
-                </TableCell>
-                <TableCell>
-                  {(() => {
-                    const { overallScore, primaryRiskType, confidence, phishing, shellCompany, compliance } = getRiskScore(domain.dataPoints);
-                    if (overallScore === null) {
-                      return <span className="text-muted-foreground text-xs">-</span>;
-                    }
-                    // Format primary risk type for display
-                    const formatRiskType = (type: string | null) => {
-                      if (!type) return 'Unknown';
-                      if (type === 'shell_company') return 'Shell Company';
-                      return type.charAt(0).toUpperCase() + type.slice(1);
-                    };
-                    return (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div className="flex items-center gap-2" data-interactive>
-                              <span className={`font-bold text-sm ${getScoreTextColor(overallScore)}`}>
-                                {overallScore}
-                              </span>
-                              <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full ${getScoreBgColor(overallScore)}`}
-                                  style={{ width: `${overallScore}%` }}
-                                />
-                              </div>
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <div className="text-xs space-y-1">
-                              <p className="font-medium">Risk Assessment: {overallScore}/100</p>
-                              <p className="text-muted-foreground">Primary: {formatRiskType(primaryRiskType)} ({confidence})</p>
-                              <div className="pt-1 border-t border-border/50 space-y-0.5">
-                                <p>Phishing: {phishing}</p>
-                                <p>Shell Company: {shellCompany}</p>
-                                <p>Compliance: {compliance}</p>
-                              </div>
-                            </div>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    );
-                  })()}
-                </TableCell>
-                <TableCell className="text-muted-foreground text-xs">
-                  {domain.lastCheckedAt
-                    ? formatDistanceToNow(new Date(domain.lastCheckedAt), {
-                        addSuffix: true,
-                      })
-                    : "Never"}
-                </TableCell>
-                <TableCell className="text-muted-foreground text-xs">
-                  {formatDistanceToNow(new Date(domain.createdAt), {
-                    addSuffix: true,
-                  })}
-                </TableCell>
-                <TableCell className="text-right" data-interactive>
-                  <TooltipProvider>
-                    <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover/row:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            onClick={(e) => handleView(e, domain.id)}
-                            aria-label={`View report for ${domain.normalizedUrl}`}
-                            className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            <Eye className="h-4 w-4" aria-hidden="true" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>View report</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            onClick={(e) => handleRescan(e, domain.id)}
-                            disabled={rescanning === domain.id}
-                            aria-label={`Rescan ${domain.normalizedUrl}`}
-                            className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors duration-150 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            {rescanning === domain.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                            ) : (
-                              <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                            )}
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>Rescan</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            onClick={(e) => handleDelete(e, domain.id)}
-                            disabled={deleting === domain.id}
-                            aria-label={`Delete ${domain.normalizedUrl}`}
-                            className="p-2 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors duration-150 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            {deleting === domain.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                            ) : (
-                              <Trash2 className="h-4 w-4" aria-hidden="true" />
-                            )}
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>Delete</TooltipContent>
-                      </Tooltip>
-                    </div>
-                  </TooltipProvider>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+                </div>
+
+                {/* Last Scan */}
+                <div className="w-32 shrink-0">
+                  <span className="text-xs text-muted-foreground">
+                    {(domain.scans?.[0]?.updatedAt || domain.lastCheckedAt)
+                      ? formatDistanceToNow(new Date((domain.scans?.[0]?.updatedAt || domain.lastCheckedAt)!), { addSuffix: true })
+                      : "Never scanned"}
+                  </span>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1 w-24 shrink-0 justify-end" data-interactive>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          router.push(`/scans/${domain.id}`);
+                        }}
+                        aria-label={`View report for ${domain.normalizedUrl}`}
+                        className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <Eye className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>View Report</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={(e) => handleRescan(e, domain.id)}
+                        disabled={rescanning === domain.id}
+                        aria-label={`Rescan ${domain.normalizedUrl}`}
+                        className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors duration-150 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {rescanning === domain.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Rescan</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        onClick={(e) => handleDelete(e, domain.id)}
+                        disabled={deleting === domain.id}
+                        aria-label={`Delete ${domain.normalizedUrl}`}
+                        className="p-2 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors duration-150 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {deleting === domain.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Delete</TooltipContent>
+                  </Tooltip>
+                </div>
+              </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Empty search results */}
+      {filteredAndSortedDomains.length === 0 && searchQuery.trim() && (
+        <div className="empty-state">
+          <div className="empty-state-icon">
+            <Search className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+          </div>
+          <p className="empty-state-title">No Domains Found</p>
+          <p className="empty-state-description">
+            No domains match &ldquo;{searchQuery}&rdquo;. Try a different search term.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

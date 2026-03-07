@@ -214,7 +214,7 @@ export async function fetchWithBrowser(
     } catch (navError) {
       // If networkidle times out, try again with just 'load'
       if (config.waitForNetworkIdle && navError instanceof Error && navError.message.includes('Timeout')) {
-        console.log(`networkidle timeout for ${url}, retrying with 'load'...`);
+        // networkidle timed out, retry with 'load'
         response = await page.goto(url, {
           waitUntil: "load",
           timeout: config.timeout ?? DEFAULT_BROWSER_TIMEOUT,
@@ -305,7 +305,7 @@ export async function fetchWithBrowser(
  * Cloudflare shows an interstitial page with "Checking your browser" that
  * automatically resolves after a few seconds for legitimate browsers
  */
-async function waitForCloudflareChallenge(page: Page): Promise<void> {
+export async function waitForCloudflareChallenge(page: Page): Promise<void> {
   const maxWaitMs = 15000; // Maximum 15 seconds to wait for challenge
   const checkIntervalMs = 500;
   let elapsed = 0;
@@ -333,14 +333,13 @@ async function waitForCloudflareChallenge(page: Page): Promise<void> {
     elapsed += checkIntervalMs;
   }
 
-  // Timed out waiting for challenge - log but continue anyway
-  console.log('Cloudflare challenge did not complete within timeout');
+  // Timed out waiting for challenge — continue anyway
 }
 
 /**
  * Dismiss cookie banners, overlays, and popups that might block interactions
  */
-async function dismissOverlays(page: Page): Promise<void> {
+export async function dismissOverlays(page: Page): Promise<void> {
   // Use JavaScript to find and click dismiss buttons, and hide overlays
   await page.evaluate(() => {
     // Common button text patterns for cookie consent - use word boundaries to avoid false matches
@@ -428,7 +427,7 @@ async function dismissOverlays(page: Page): Promise<void> {
 /**
  * Auto-scroll the page to trigger lazy loading
  */
-async function autoScroll(page: Page): Promise<void> {
+export async function autoScroll(page: Page): Promise<void> {
   await page.evaluate(async () => {
     await new Promise<void>((resolve) => {
       let totalHeight = 0;
@@ -572,6 +571,176 @@ export function hasHiddenContactContent(html: string, url: string): boolean {
 }
 
 /**
+ * Text patterns that indicate an about page link (exact match, lowercase)
+ */
+const ABOUT_LINK_TEXT_PATTERNS = [
+  "about",
+  "about us",
+  "who we are",
+  "our story",
+  "our company",
+  "our team",
+  "company info",
+  "the team",
+  "meet the team",
+  "learn more about us",
+];
+
+/**
+ * Result from about link discovery
+ */
+export interface AboutLinkResult {
+  url: string;
+  anchorText: string;
+  discoveredByClick: boolean;
+}
+
+/**
+ * Extract about page URLs from a rendered page by looking at link text.
+ * Mirrors findContactLinksWithBrowser but for about/company pages.
+ *
+ * Strategy:
+ * 1. First look for traditional <a href> links with about-related text or URL
+ * 2. If none found, look for clickable SPA elements and click them
+ */
+export async function findAboutLinksWithBrowser(
+  baseUrl: string
+): Promise<AboutLinkResult[]> {
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
+
+  try {
+    const browser = await getBrowser();
+
+    context = await browser.newContext({
+      userAgent: DEFAULT_USER_AGENT,
+      viewport: { width: 1920, height: 1080 },
+      ignoreHTTPSErrors: true,
+    });
+
+    page = await context.newPage();
+    page.setDefaultTimeout(DEFAULT_BROWSER_TIMEOUT);
+    page.setDefaultNavigationTimeout(DEFAULT_NAVIGATION_TIMEOUT);
+
+    await page.goto(baseUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: DEFAULT_BROWSER_TIMEOUT,
+    });
+
+    // Wait for SPA content to render
+    await page.waitForTimeout(5000);
+
+    // Dismiss any overlays
+    await dismissOverlays(page);
+
+    const results: AboutLinkResult[] = [];
+    const seenUrls = new Set<string>();
+
+    // Strategy 1: Find traditional <a href> links with about-related text or URL
+    const traditionalLinks = await page.evaluate((patterns: string[]) => {
+      const found: { url: string; anchorText: string; matchType: string }[] = [];
+      const links = document.querySelectorAll('a[href]');
+
+      // URL paths that are clearly NOT about pages
+      const excludedPaths = /\/cart|\/checkout|\/login|\/register|\/product|\/shop|\/blog|\/builder|\/faq|\/help|\/search/i;
+
+      links.forEach((link) => {
+        if (!(link instanceof HTMLAnchorElement)) return;
+
+        const href = link.href;
+        const text = link.textContent?.trim().toLowerCase() || '';
+        const ariaLabel = link.getAttribute('aria-label')?.trim().toLowerCase() || '';
+
+        // Skip empty, javascript, mailto, tel links
+        if (!href) return;
+        if (href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) return;
+
+        // Check if URL contains about-related paths (high confidence)
+        const matchesUrl = /\/about(?:-us|us)?(?:$|\/|\?|#)|\/our-(?:story|company|team)|\/who-we-are/i.test(href);
+
+        // Check if link text matches about patterns
+        const matchesText = patterns.some(pattern =>
+          text === pattern || ariaLabel === pattern
+        );
+
+        if (matchesUrl) {
+          // URL match is high confidence — always accept
+          found.push({
+            url: href,
+            anchorText: link.textContent?.trim() || '',
+            matchType: 'url',
+          });
+        } else if (matchesText && !excludedPaths.test(href)) {
+          // Text match — only accept if the URL isn't obviously wrong
+          found.push({
+            url: href,
+            anchorText: link.textContent?.trim() || '',
+            matchType: 'text',
+          });
+        }
+      });
+
+      // Prefer URL matches over text-only matches
+      found.sort((a, b) => (a.matchType === 'url' ? -1 : 1) - (b.matchType === 'url' ? -1 : 1));
+
+      return found;
+    }, ABOUT_LINK_TEXT_PATTERNS);
+
+    for (const link of traditionalLinks) {
+      if (!seenUrls.has(link.url)) {
+        seenUrls.add(link.url);
+        results.push({ url: link.url, anchorText: link.anchorText, discoveredByClick: false });
+      }
+    }
+
+
+    // Strategy 2: If no traditional links found, look for clickable elements with about text
+    if (results.length === 0) {
+
+      for (const pattern of ["About Us", "About", "Our Story", "Our Company", "Who We Are"]) {
+        try {
+          const element = page.locator(`text="${pattern}"`).first();
+          const isVisible = await element.isVisible({ timeout: 1000 }).catch(() => false);
+
+          if (isVisible) {
+            const currentUrl = page.url();
+
+            await element.click({ timeout: 5000 });
+            await page.waitForTimeout(2000);
+
+            const newUrl = page.url();
+
+            if (newUrl !== currentUrl && !seenUrls.has(newUrl)) {
+              seenUrls.add(newUrl);
+              results.push({ url: newUrl, anchorText: pattern, discoveredByClick: true });
+
+              // Navigate back to homepage for next attempt
+              await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+              await page.waitForTimeout(3000);
+            }
+          }
+        } catch {
+          // Element not found or click failed, continue to next pattern
+        }
+      }
+    }
+
+
+    return results;
+
+  } catch (error) {
+    return [] as AboutLinkResult[];
+  } finally {
+    if (page) {
+      await page.close().catch(() => {});
+    }
+    if (context) {
+      await context.close().catch(() => {});
+    }
+  }
+}
+
+/**
  * Text patterns that indicate a contact link (exact match)
  */
 const CONTACT_LINK_TEXT_PATTERNS = [
@@ -680,12 +849,10 @@ export async function findContactLinksWithBrowser(
       }
     }
 
-    console.log(`Found ${results.length} contact links via traditional <a> tags`);
 
     // Strategy 2: If no traditional links found, look for clickable elements with contact text
     // This handles SPAs where navigation is done via JavaScript (Vue Router, React Router, etc.)
     if (results.length === 0) {
-      console.log('No traditional links found, searching for clickable contact elements...');
 
       // Try each contact text pattern
       for (const pattern of ["Contact Us", "Contact", "Support", "Help", "Get in Touch"]) {
@@ -707,7 +874,6 @@ export async function findContactLinksWithBrowser(
 
             // If URL changed, we found a contact page
             if (newUrl !== currentUrl && !seenUrls.has(newUrl)) {
-              console.log(`Found contact URL by clicking "${pattern}": ${newUrl}`);
               seenUrls.add(newUrl);
               results.push({ url: newUrl, discoveredByClick: true });
 
@@ -722,12 +888,10 @@ export async function findContactLinksWithBrowser(
       }
     }
 
-    console.log(`Total contact URLs found: ${results.length} - ${results.map(r => r.url).join(', ')}`);
 
     return results;
 
   } catch (error) {
-    console.error('Error finding contact links with browser:', error);
     return [] as ContactLinkResult[];
   } finally {
     if (page) {

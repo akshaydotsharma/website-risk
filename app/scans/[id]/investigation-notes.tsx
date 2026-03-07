@@ -6,7 +6,6 @@ import {
   Card,
   CardHeader,
   CardTitle,
-  CardDescription,
   CardContent,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -137,23 +136,15 @@ export function InvestigationNotes({
 
   return (
     <Card>
-      <CardHeader tint="warning">
+      <CardHeader tint="ai">
         <div className="flex items-center justify-between">
-          <div className="space-y-1.5">
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5 text-amber-600" />
-              Investigation Notes
-            </CardTitle>
-            <CardDescription>
-              Document your observations and findings
-            </CardDescription>
-          </div>
+          <CardTitle>Investigation Notes</CardTitle>
           {!showAddForm && (
             <Button
               onClick={() => setShowAddForm(true)}
               size="sm"
               variant="outline"
-              className="border-amber-500/30 hover:bg-amber-500/10 hover:border-amber-500/50"
+              className="border-purple-500/30 hover:bg-purple-500/10 hover:border-purple-500/50"
             >
               <Plus className="h-4 w-4 mr-1.5" />
               Add Note
@@ -173,10 +164,10 @@ export function InvestigationNotes({
               onChange={(e) => setNewNote(e.target.value)}
               className="
                 w-full min-h-[120px] p-4 rounded-xl
-                border border-amber-500/20 bg-amber-500/5
+                border border-purple-500/20 bg-purple-500/5
                 text-sm leading-relaxed resize-y
                 placeholder:text-muted-foreground/60
-                focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500/40
+                focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40
                 transition-all duration-200
               "
               autoFocus
@@ -196,7 +187,7 @@ export function InvestigationNotes({
                 onClick={handleAddNote}
                 disabled={isAdding || !newNote.trim()}
                 size="sm"
-                className="bg-amber-500 hover:bg-amber-600 text-white"
+                className="bg-purple-500 hover:bg-purple-600 text-white"
               >
                 {isAdding ? (
                   <Loader2 className="h-4 w-4 animate-spin mr-1.5" />

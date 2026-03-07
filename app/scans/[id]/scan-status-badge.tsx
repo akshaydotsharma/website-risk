@@ -110,7 +110,7 @@ export function ScanStatusBadge({
 
   return (
     <Badge variant={isActive ? "success" : "destructive"}>
-      {isActive ? `Active (${statusCode})` : "Inactive"}
+      {isActive ? "Active" : "Inactive"}
     </Badge>
   );
 }

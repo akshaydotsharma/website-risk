@@ -991,6 +991,12 @@ async function persistAssessmentDataPoint(
       extractedAt: new Date(),
     },
   });
+
+  // Denormalize risk score onto Domain for server-side sorting
+  await prisma.domain.update({
+    where: { id: scan.domainId },
+    data: { riskScore: assessment.overall_risk_score },
+  });
 }
 
 async function persistScoringSignalLogs(

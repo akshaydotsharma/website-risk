@@ -1,186 +1,235 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useNotifications } from "@/components/notification-context";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Loader2,
   Search,
-  Mail,
-  FileText,
-  ShoppingCart,
-  Cpu,
   ArrowRight,
-  Radar,
   AlertCircle,
+  Globe,
+  ChevronRight,
 } from "lucide-react";
-import { cleanUrl } from "@/lib/utils";
+import { cleanUrl, getScoreTextColor } from "@/lib/utils";
+import { formatDistanceToNow } from "date-fns";
 
-export default function HomePageContent() {
+interface RecentScan {
+  id: string;
+  normalizedUrl: string;
+  isActive: boolean;
+  riskScore: number | null;
+  lastCheckedAt: string | null;
+  scanStatus: string | null;
+}
+
+interface HomePageContentProps {
+  recentScans: RecentScan[];
+}
+
+export default function HomePageContent({ recentScans }: HomePageContentProps) {
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { startPolling } = useNotifications();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Pre-fill URL from query parameter
+  const autoResize = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
+  }, []);
+
   useEffect(() => {
     const urlParam = searchParams.get("url");
-    if (urlParam) {
-      setUrl(urlParam);
-    }
+    if (urlParam) setUrl(urlParam);
   }, [searchParams]);
 
-  // Auto-normalize URL on blur
-  const handleUrlBlur = () => {
-    if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
-      // Don't auto-modify, just validate
-    }
+  const parseDomains = (input: string): string[] => {
+    return input
+      .split(/[,\s\n]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((s) => cleanUrl(s));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!url.trim()) {
-      setError("Please enter a website URL");
+    const domains = parseDomains(url);
+    if (domains.length === 0) {
+      setError("Enter a website URL to begin scanning.");
       return;
     }
-
-    // Clean and normalize the URL for consistent handling
-    const cleanedUrl = cleanUrl(url);
-    // Add https:// protocol for the API request
-    const normalizedUrl = `https://${cleanedUrl}`;
 
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/scans", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ url: normalizedUrl }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to create scan");
+      if (domains.length === 1) {
+        const response = await fetch("/api/scans", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: `https://${domains[0]}` }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Failed to create scan");
+        startPolling();
+        router.push(`/scans/${data.id}`);
+      } else {
+        // Bulk scan with server-side concurrency control
+        const response = await fetch("/api/scans/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls: domains.map((d) => `https://${d}`) }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Failed to start bulk scan");
+        startPolling();
+        router.push("/scans");
       }
-
-      // Redirect to scan detail page
-      router.push(`/scans/${data.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
+      setError(err instanceof Error ? err.message : "An error occurred. Check the URL and try again.");
       setIsLoading(false);
     }
   };
 
-  const featureChips = [
-    { icon: Mail, label: "Contact Details", color: "text-blue-600" },
-    { icon: FileText, label: "Policy Links", color: "text-green-600" },
-    { icon: ShoppingCart, label: "Homepage SKUs", color: "text-purple-600" },
-    { icon: Cpu, label: "Tech Signals", color: "text-primary" },
-  ];
-
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      {/* Hero Header */}
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6 py-4">
-        <div className="space-y-3">
-          <h1 className="text-page-title">Domain Risk Scanner</h1>
-          <p className="text-page-subtitle max-w-lg">
-            Scan a domain to extract risk signals: policies, contact footprint, product footprint, and technical indicators.
+    <div className="flex flex-col items-center justify-start pt-52 sm:pt-60 px-4 sm:px-6">
+      <div className="w-full max-w-xl mx-auto space-y-6">
+        {/* Heading */}
+        <div className="text-center space-y-1">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+            Domain Scanner
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Scan any domain for risk signals and compliance gaps
           </p>
         </div>
-        <div className="hidden lg:flex items-center justify-center w-28 h-28 rounded-2xl bg-gradient-to-br from-primary/10 via-primary/5 to-transparent border border-primary/10">
-          <Radar className="w-14 h-14 text-primary/50 animate-pulse" aria-hidden="true" />
+
+        {/* Search input */}
+        <div className="search-hero">
+          <form onSubmit={handleSubmit} className="flex flex-col p-2">
+            <div className="relative">
+              <Search
+                className="absolute left-3 top-3 h-4 w-4 text-muted-foreground/60"
+                aria-hidden="true"
+              />
+              <textarea
+                ref={textareaRef}
+                placeholder="Enter domains, e.g. example.com, site.org"
+                value={url}
+                onChange={(e) => { setUrl(e.target.value); autoResize(); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSubmit(e);
+                  }
+                }}
+                disabled={isLoading}
+                aria-label="Website domains to scan"
+                aria-describedby="url-helper"
+                aria-invalid={error ? "true" : undefined}
+                rows={1}
+                style={{ outline: "none", boxShadow: "none" }}
+                className="flex w-full rounded-md text-sm sm:text-base pl-10 pr-3 py-2.5 border-0 shadow-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 bg-transparent resize-none overflow-y-auto"
+              />
+            </div>
+            <div className="flex justify-end pt-1 pb-0.5 pr-1">
+            <Button
+              type="submit"
+              disabled={isLoading}
+              className="h-9 px-4 rounded-full text-sm font-semibold"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <span className="hidden sm:inline">Scanning{"\u2026"}</span>
+                </>
+              ) : (
+                <>
+                  Scan{parseDomains(url).length > 1 ? ` (${parseDomains(url).length})` : ""}
+                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                </>
+              )}
+            </Button>
+            </div>
+          </form>
         </div>
-      </div>
 
-      <div>
-        {/* Main Scan Card */}
-        <Card className="overflow-hidden">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Search className="h-5 w-5 text-primary" aria-hidden="true" />
-                Start a New Scan
-              </CardTitle>
-              <CardDescription>
-                Enter any domain to begin intelligence extraction
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-5">
-                <div className="space-y-2">
-                  <div className="relative">
-                    <Input
-                      type="text"
-                      placeholder="example.com"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                      onBlur={handleUrlBlur}
-                      disabled={isLoading}
-                      aria-label="Website domain to scan"
-                      aria-describedby="url-helper"
-                      aria-invalid={error ? "true" : undefined}
-                      className="text-base pr-4 h-12"
-                    />
+        {/* Error state */}
+        {error && (
+          <div
+            className="p-3 bg-danger-tint border border-destructive/20 rounded-lg text-sm text-destructive flex items-start gap-2"
+            role="alert"
+          >
+            <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" aria-hidden="true" />
+            {error}
+          </div>
+        )}
+
+        {/* Recent scans */}
+        {recentScans.length > 0 && (
+          <div className="space-y-2 pt-10">
+            <div className="flex items-center justify-between">
+              <h2 className="text-label">Recent Scans</h2>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs text-muted-foreground hover:text-foreground gap-1 h-7"
+                onClick={() => router.push("/scans")}
+              >
+                View All
+                <ChevronRight className="h-3 w-3" aria-hidden="true" />
+              </Button>
+            </div>
+            <div className="bg-card border rounded-xl divide-y overflow-hidden">
+              {recentScans.map((scan) => (
+                <button
+                  key={scan.id}
+                  onClick={() => router.push(`/scans/${scan.id}`)}
+                  className="recent-scan-item w-full text-left px-4 py-2.5"
+                >
+                  {/* Score indicator */}
+                  <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-muted/50 shrink-0">
+                    {scan.riskScore !== null ? (
+                      <span className={`text-sm font-bold tabular-nums ${getScoreTextColor(scan.riskScore)}`}>
+                        {scan.riskScore}
+                      </span>
+                    ) : (
+                      <Globe className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                    )}
                   </div>
-                  <p id="url-helper" className="text-helper">
-                    Try: shopify.com, stripe.com, or any domain you want to analyze
-                  </p>
-                </div>
 
-                {/* Feature Chips */}
-                <div className="space-y-2">
-                  <p className="text-label">
-                    Extracting
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {featureChips.map((chip) => (
-                      <Badge
-                        key={chip.label}
-                        variant="outline"
-                        className="gap-1.5 py-1 px-2.5"
-                      >
-                        <chip.icon className={`h-3.5 w-3.5 ${chip.color}`} aria-hidden="true" />
-                        {chip.label}
-                      </Badge>
-                    ))}
+                  {/* Domain info */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{scan.normalizedUrl}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {scan.lastCheckedAt
+                        ? formatDistanceToNow(new Date(scan.lastCheckedAt), { addSuffix: true })
+                        : "Not yet scanned"}
+                    </p>
                   </div>
-                </div>
 
-                {error && (
-                  <div
-                    className="p-3 bg-danger-tint border border-destructive/20 rounded-lg text-sm text-destructive flex items-start gap-2"
-                    role="alert"
+                  {/* Status */}
+                  <Badge
+                    variant={scan.isActive ? "success-subtle" : "danger-subtle"}
+                    className="shrink-0"
                   >
-                    <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" aria-hidden="true" />
-                    {error}
-                  </div>
-                )}
+                    {scan.isActive ? "Active" : "Inactive"}
+                  </Badge>
 
-                <Button type="submit" disabled={isLoading} className="w-full h-11">
-                  {isLoading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
-                      Scanning...
-                    </>
-                  ) : (
-                    <>
-                      Scan Domain
-                      <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
-                    </>
-                  )}
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0" aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

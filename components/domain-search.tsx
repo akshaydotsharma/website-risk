@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Search, Globe, CheckCircle, XCircle, Clock, ArrowRight, Loader2 } from "lucide-react";
 import { cn, cleanUrl } from "@/lib/utils";
+import { useNotifications } from "@/components/notification-context";
 import { formatDistanceToNow } from "date-fns";
 
 interface SearchResult {
@@ -18,6 +19,7 @@ interface SearchResult {
 
 export function DomainSearch() {
   const router = useRouter();
+  const { startPolling } = useNotifications();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isOpen, setIsOpen] = useState(false);
@@ -126,6 +128,7 @@ export function DomainSearch() {
         throw new Error(data.error || "Failed to create scan");
       }
 
+      startPolling();
       setQuery("");
       router.push(`/scans/${data.id}`);
     } catch (error) {

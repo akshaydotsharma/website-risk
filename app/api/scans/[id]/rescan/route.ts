@@ -2,9 +2,13 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkWebsiteActive } from "@/lib/utils";
 import { extractDataPoint, extractDataPointFromContent, extractAiGeneratedLikelihood } from "@/lib/extractors";
+import type { AboutPageData } from "@/lib/extractors";
 import { isDomainAuthorized, runDiscoveryPipeline } from "@/lib/discovery";
 import { runRiskIntelPipeline, runHomepageSkuExtraction, runPolicyLinksExtraction } from "@/lib/domainIntel";
 import type { DomainPolicy } from "@/lib/domainIntel/schemas";
+import { captureScreenshot } from "@/lib/screenshots";
+import { getOrCreateArtifact, extractReadableText } from "@/lib/extractHomepageArtifact";
+import { runIncrementalSimilarity } from "@/lib/similarityCheck";
 
 export async function POST(
   _request: Request,
@@ -69,6 +73,7 @@ export async function POST(
         isActive,
         statusCode,
         checkedAt,
+        status: "processing",
       },
     });
 
@@ -202,6 +207,7 @@ export async function POST(
     }
 
     // Step 6: Extract SKUs & Policy links (for authorized domains)
+    const rescanPolicyUrls: { privacy: string | null; refund: string | null; terms: string | null } = { privacy: null, refund: null, terms: null };
     if (authResult.authorized && authResult.config) {
       console.log(`[6/10] Extracting homepage SKUs & policy links...`);
       const policy: DomainPolicy = {
@@ -234,7 +240,10 @@ export async function POST(
         (async () => {
           try {
             const policyResult = await runPolicyLinksExtraction(newScan.id, scanUrl, policy);
-            console.log(`[6/10] Policies: privacy=${policyResult.summary.privacy.url ? '✓' : '✗'}, refund=${policyResult.summary.refund.url ? '✓' : '✗'}, terms=${policyResult.summary.terms.url ? '✓' : '✗'}`);
+            rescanPolicyUrls.privacy = policyResult.summary.privacy.url;
+            rescanPolicyUrls.refund = policyResult.summary.refund.url;
+            rescanPolicyUrls.terms = policyResult.summary.terms.url;
+            console.log(`[6/10] Policies: privacy=${rescanPolicyUrls.privacy ? '✓' : '✗'}, refund=${rescanPolicyUrls.refund ? '✓' : '✗'}, terms=${rescanPolicyUrls.terms ? '✓' : '✗'}`);
           } catch (policyError) {
             console.error(`[6/10] ✗ Policy extraction failed:`, policyError);
           }
@@ -246,6 +255,184 @@ export async function POST(
     } else {
       console.log(`[6/10] ⊘ Skipped (domain not authorized)`);
     }
+
+    // Screenshot capture (runs in parallel with remaining steps)
+    const screenshotPromise = captureScreenshot({
+      url: scanUrl,
+      domainId: domain.id,
+      scanId: newScan.id,
+      captureType: "auto",
+    })
+      .then((result) => {
+        console.log(`Screenshot: ${result.success ? "captured" : "failed"} (${result.durationMs}ms)`);
+      })
+      .catch((err) => {
+        console.error("Screenshot capture error:", err);
+      });
+
+    // Page text extraction (runs in parallel with remaining steps)
+    const contactResult = extractedResults.find((r) => r.key === "contact_details");
+    const aboutPageUrl = contactResult?.value?.about_page_url;
+    const contactPageUrl = contactResult?.value?.primary_contact_page_url;
+
+    const ERROR_PAGE_PATTERNS = [
+      /does not exist/i, /has been deleted/i, /page not found/i,
+      /404\s*(error|not found)?/i, /no longer available/i,
+      /this page (isn.t|is not) available/i, /return to (previous|home)/i,
+      /access denied/i, /forbidden/i, /under construction/i, /coming soon/i,
+    ];
+    function isErrorPageContent(text: string | null): boolean {
+      if (!text || text.length < 10) return true;
+      const words = text.trim().split(/\s+/).length;
+      if (words < 15) {
+        return ERROR_PAGE_PATTERNS.some((p) => p.test(text));
+      }
+      return false;
+    }
+
+    type PageData = { page_url: string; text_content: string | null; word_count: number; headings: string[]; fetch_method: string; status_code: number | null; blocked: boolean; blocked_reason: string | null; artifact_id: string };
+    function buildPageData(pageUrl: string, artifact: any, artifactId: string, maxTextBytes: number): PageData {
+      const readableText = artifact.htmlSnippet
+        ? extractReadableText(artifact.htmlSnippet).substring(0, maxTextBytes)
+        : artifact.textSnippet?.substring(0, maxTextBytes) || null;
+      const actualWordCount = readableText ? readableText.trim().split(/\s+/).filter((w: string) => w.length > 0).length : 0;
+      return {
+        page_url: pageUrl, text_content: readableText,
+        word_count: actualWordCount, headings: artifact.features?.headingTexts ?? [],
+        fetch_method: artifact.fetchMethod, status_code: artifact.statusCode,
+        blocked: artifact.features?.blocked ?? false, blocked_reason: artifact.features?.blockedReason ?? null,
+        artifact_id: artifactId,
+      };
+    }
+
+    let aboutPageResult: AboutPageData | null = null;
+    let homepageTextResult: PageData | null = null;
+    let contactPageResult: PageData | null = null;
+
+    const pageExtractionPromises: Promise<void>[] = [];
+
+    // About page
+    if (aboutPageUrl) {
+      pageExtractionPromises.push(
+        (async () => {
+          try {
+            console.log(`[6.5/10] Extracting about page artifact from ${aboutPageUrl}...`);
+            const { artifact, artifactId } = await getOrCreateArtifact(aboutPageUrl, "about", { skipCache: true });
+            if (!artifact.ok) {
+              console.log(`[6.5/10] ✗ About page fetch failed (${artifact.statusCode}), keeping existing data`);
+              return;
+            }
+            const data = buildPageData(aboutPageUrl, artifact, artifactId, 8 * 1024);
+            if (isErrorPageContent(data.text_content)) {
+              console.log(`[6.5/10] ✗ About page looks like an error page (${data.word_count} words), skipping`);
+              return;
+            }
+            aboutPageResult = {
+              about_page_url: aboutPageUrl, text_content: data.text_content,
+              word_count: data.word_count, headings: data.headings,
+              fetch_method: data.fetch_method, status_code: data.status_code,
+              blocked: data.blocked, blocked_reason: data.blocked_reason, artifact_id: data.artifact_id,
+            };
+            console.log(`[6.5/10] ✓ About page extracted: ${data.word_count} words, ${data.headings.length} headings`);
+          } catch (aboutError) {
+            console.error(`[6.5/10] ✗ About page extraction failed:`, aboutError);
+          }
+        })()
+      );
+    }
+
+    // Homepage text
+    pageExtractionPromises.push(
+      (async () => {
+        try {
+          console.log(`[6.5/10] Extracting homepage text artifact from ${scanUrl}...`);
+          const { artifact, artifactId } = await getOrCreateArtifact(scanUrl, "homepage", { skipCache: true });
+          if (!artifact.ok) {
+            // Fallback: use already-crawled homepage HTML from discovery pipeline
+            if (crawledPages) {
+              // crawledPages uses full URLs as keys, find the homepage by URL match
+              const homepageHtml = crawledPages.get(scanUrl) || crawledPages.get(scanUrl.replace(/\/$/, "")) || crawledPages.get(scanUrl + "/") || Array.from(crawledPages.entries()).find(([k]) => new URL(k).pathname === "/" || new URL(k).pathname === "")?.[1] || crawledPages.values().next().value;
+              console.log(`[6.5/10] Crawled pages fallback: ${crawledPages.size} pages available, homepage match: ${!!homepageHtml}`);
+              if (homepageHtml && homepageHtml.length > 200) {
+                const readableText = extractReadableText(homepageHtml).substring(0, 16 * 1024);
+                const wordCount = readableText.trim().split(/\s+/).filter((w: string) => w.length > 0).length;
+                if (!isErrorPageContent(readableText)) {
+                  homepageTextResult = {
+                    page_url: scanUrl, text_content: readableText, word_count: wordCount,
+                    headings: [], fetch_method: "crawl", status_code: 200,
+                    blocked: false, blocked_reason: null, artifact_id: artifactId,
+                  };
+                  console.log(`[6.5/10] ✓ Homepage text from crawled content: ${wordCount} words`);
+                  return;
+                }
+              }
+            }
+            console.log(`[6.5/10] ✗ Homepage fetch failed (${artifact.statusCode}), skipping`);
+            return;
+          }
+          const hpData = buildPageData(scanUrl, artifact, artifactId, 16 * 1024);
+          if (isErrorPageContent(hpData.text_content)) {
+            console.log(`[6.5/10] ✗ Homepage looks like an error page, skipping`);
+            return;
+          }
+          homepageTextResult = hpData;
+          console.log(`[6.5/10] ✓ Homepage text extracted: ${homepageTextResult.word_count} words`);
+        } catch (err) {
+          console.error(`[6.5/10] ✗ Homepage text extraction failed:`, err);
+        }
+      })()
+    );
+
+    // Contact page text
+    if (contactPageUrl) {
+      pageExtractionPromises.push(
+        (async () => {
+          try {
+            console.log(`[6.5/10] Extracting contact page artifact from ${contactPageUrl}...`);
+            const { artifact, artifactId } = await getOrCreateArtifact(contactPageUrl, "contact", { skipCache: true });
+            if (!artifact.ok) {
+              // Fallback: fetch contact page directly with browser
+              try {
+                const { fetchWithBrowser: fetchBrowser, closeBrowser: closeBr } = await import("@/lib/browser");
+                const browserResult = await fetchBrowser(null, contactPageUrl, "contact-text", {
+                  waitForNetworkIdle: true,
+                  additionalWaitMs: 1000,
+                });
+                await closeBr().catch(() => {});
+                if (browserResult.content && browserResult.content.length > 200) {
+                  const readableText = extractReadableText(browserResult.content).substring(0, 8 * 1024);
+                  const wordCount = readableText.trim().split(/\s+/).filter((w: string) => w.length > 0).length;
+                  if (wordCount > 10 && !isErrorPageContent(readableText)) {
+                    contactPageResult = {
+                      page_url: contactPageUrl, text_content: readableText, word_count: wordCount,
+                      headings: [], fetch_method: "browser", status_code: browserResult.statusCode || 200,
+                      blocked: false, blocked_reason: null, artifact_id: artifactId,
+                    };
+                    console.log(`[6.5/10] ✓ Contact page text via browser fallback: ${wordCount} words`);
+                    return;
+                  }
+                }
+              } catch (e) {
+                // Browser fallback failed
+              }
+              console.log(`[6.5/10] ✗ Contact page fetch failed (${artifact.statusCode}), skipping`);
+              return;
+            }
+            const cpData = buildPageData(contactPageUrl, artifact, artifactId, 8 * 1024);
+            if (isErrorPageContent(cpData.text_content)) {
+              console.log(`[6.5/10] ✗ Contact page looks like an error page, skipping`);
+              return;
+            }
+            contactPageResult = cpData;
+            console.log(`[6.5/10] ✓ Contact page text extracted: ${contactPageResult.word_count} words`);
+          } catch (err) {
+            console.error(`[6.5/10] ✗ Contact page text extraction failed:`, err);
+          }
+        })()
+      );
+    }
+
+    const aboutPagePromise = Promise.all(pageExtractionPromises);
 
     // Step 7: AI analysis (extracts AI-generated likelihood)
     console.log(`[7/10] Running AI analysis...`);
@@ -261,6 +448,64 @@ export async function POST(
     } catch (aiError) {
       console.error(`[7/10] ✗ AI analysis failed:`, aiError);
     }
+
+    // Wait for page extraction to finish before saving
+    await aboutPagePromise;
+
+    // Enrich contact_details with data from the contact page text
+    // The AI at step 5 only had homepage content; the contact page was fetched at step 6.5
+    const contactText = (contactPageResult as PageData | null)?.text_content;
+    if (contactText) {
+      const contactDetailsResult = extractedResults.find(r => r.key === "contact_details");
+      if (contactDetailsResult) {
+        const val = contactDetailsResult.value as any;
+        const text = contactText;
+
+        // Extract emails from contact page text
+        if ((!val.emails || val.emails.length === 0)) {
+          const emailMatches = text.match(/[\w.+-]+@[\w.-]+\.\w{2,}/g);
+          if (emailMatches) {
+            val.emails = [...new Set(emailMatches)];
+            console.log(`[7.5/10] Enriched contact_details with emails from contact page: ${val.emails.join(", ")}`);
+          }
+        }
+
+        // Extract phone numbers from contact page text
+        if ((!val.phone_numbers || val.phone_numbers.length === 0)) {
+          const phoneMatches = text.match(/\+?\(?\d[\d\s\-().]{7,}\d/g);
+          if (phoneMatches) {
+            val.phone_numbers = [...new Set(phoneMatches.map((p: string) => p.trim()))];
+            console.log(`[7.5/10] Enriched contact_details with phones from contact page: ${val.phone_numbers.join(", ")}`);
+          }
+        }
+      }
+    }
+
+    // Policy page text extraction — runs after policy URLs are discovered
+    const policyPageResults: { key: string; label: string; url: string; data: PageData }[] = [];
+    const POLICY_PAGES = [
+      { key: "privacy_page", label: "Privacy policy", url: rescanPolicyUrls.privacy, pageType: "privacy" },
+      { key: "refund_page", label: "Refund policy", url: rescanPolicyUrls.refund, pageType: "refund" },
+      { key: "terms_page", label: "Terms of service", url: rescanPolicyUrls.terms, pageType: "terms" },
+    ] as const;
+
+    const policyTextTasks = POLICY_PAGES
+      .filter((p) => p.url)
+      .map((p) =>
+        (async () => {
+          try {
+            const { artifact, artifactId } = await getOrCreateArtifact(p.url!, p.pageType, { skipCache: true });
+            if (!artifact.ok) return;
+            const ppData = buildPageData(p.url!, artifact, artifactId, 8 * 1024);
+            if (isErrorPageContent(ppData.text_content)) return;
+            policyPageResults.push({
+              key: p.key, label: p.label, url: p.url!,
+              data: ppData,
+            });
+          } catch { /* skip */ }
+        })()
+      );
+    if (policyTextTasks.length > 0) await Promise.all(policyTextTasks);
 
     // Step 8: Save extracted data points BEFORE risk assessment
     // Risk assessment reads contact_details and ai_generated_likelihood from the database,
@@ -307,6 +552,37 @@ export async function POST(
       ]);
       await prisma.$transaction(dbOperations);
     }
+
+    // Helper: save page text data point with quality gate
+    const domainId = domain!.id;
+    async function savePageTextPoint(
+      key: string, label: string, data: any, sources: string[]
+    ) {
+      const valueJson = JSON.stringify(data);
+      const sourcesJson = JSON.stringify(sources);
+      const emptyJson = JSON.stringify({});
+
+      // Always save historical scan record
+      await prisma.scanDataPoint.create({
+        data: { scanId: newScan.id, key, label, value: valueJson, sources: sourcesJson, rawOpenAIResponse: emptyJson },
+      });
+
+      await prisma.domainDataPoint.upsert({
+        where: { domainId_key: { domainId, key } },
+        create: { domainId, key, label, value: valueJson, sources: sourcesJson, rawOpenAIResponse: emptyJson },
+        update: { value: valueJson, sources: sourcesJson, rawOpenAIResponse: emptyJson, extractedAt: new Date() },
+      });
+      console.log(`[8/10] ✓ ${label} data point saved`);
+    }
+
+    // Save page text data points
+    if (aboutPageResult) await savePageTextPoint("about_page", "About page", aboutPageResult, aboutPageUrl ? [aboutPageUrl] : []);
+    if (homepageTextResult) await savePageTextPoint("homepage_text", "Homepage text", homepageTextResult, [scanUrl]);
+    if (contactPageResult) await savePageTextPoint("contact_page", "Contact page", contactPageResult, contactPageUrl ? [contactPageUrl] : []);
+    for (const pp of policyPageResults) {
+      await savePageTextPoint(pp.key, pp.label, pp.data, [pp.url]);
+    }
+
     console.log(`[8/10] ✓ Data points saved`);
 
     // Step 9: Risk assessment (runs AFTER data points are saved so it can read them)
@@ -322,15 +598,25 @@ export async function POST(
       console.error(`[9/10] ✗ Risk assessment failed:`, riskError);
     }
 
-    // Step 10: Mark scan as complete
-    console.log(`[10/10] Finalizing scan...`);
+    // Wait for screenshot capture to finish
+    await screenshotPromise;
+
+    // Step 10: Similarity check
+    console.log(`[10/11] Running similarity check...`);
+    await runIncrementalSimilarity(domain.id, domain.normalizedUrl).catch((err) => {
+      console.error(`[10/11] ✗ Similarity check failed (non-fatal):`, err);
+    });
+    console.log(`[10/11] ✓ Similarity check complete`);
+
+    // Step 11: Mark scan as complete
+    console.log(`[11/11] Finalizing scan...`);
     await prisma.websiteScan.update({
       where: { id: newScan.id },
       data: { status: 'completed' },
     });
-    console.log(`[10/10] ✓ Scan completed successfully!\n`);
+    console.log(`[11/11] ✓ Scan completed successfully!\n`);
 
-    return NextResponse.json({ id: domain.id, scanId: newScan.id });
+    return NextResponse.json({ id: domain.id, scanId: newScan.id, normalizedUrl: domain.normalizedUrl });
   } catch (error) {
     console.error("[ERROR] Scan failed:", error);
     return NextResponse.json(

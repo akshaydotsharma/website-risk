@@ -8,7 +8,6 @@ import { format } from "date-fns";
 import {
   ExternalLink,
   FileText,
-  RefreshCw,
   Loader2,
   CheckCircle,
   XCircle,
@@ -16,7 +15,7 @@ import {
   Info,
   Shield,
   Scale,
-  RotateCcw,
+  RotateCw,
   ChevronDown,
 } from "lucide-react";
 
@@ -109,23 +108,11 @@ interface PolicyLinksCardProps {
 
 const POLICY_TYPE_CONFIG: Record<
   string,
-  { label: string; icon: React.ReactNode; description: string }
+  { label: string }
 > = {
-  privacy: {
-    label: "Privacy Policy",
-    icon: <Shield className="h-4 w-4" />,
-    description: "Data handling and privacy practices",
-  },
-  refund: {
-    label: "Refund / Returns",
-    icon: <RotateCcw className="h-4 w-4" />,
-    description: "Return and refund policies",
-  },
-  terms: {
-    label: "Terms of Service",
-    icon: <Scale className="h-4 w-4" />,
-    description: "Legal terms and conditions",
-  },
+  privacy: { label: "Privacy Policy" },
+  refund: { label: "Refund / Returns" },
+  terms: { label: "Terms of Service" },
 };
 
 const METHOD_LABELS: Record<string, string> = {
@@ -277,15 +264,7 @@ export function PolicyLinksCard({ domainId, initialScanStatus }: PolicyLinksCard
     <Card>
       <CardHeader className="pb-4">
         <div className="flex items-center justify-between">
-          <div className="space-y-1.5">
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" />
-              Policy Links
-            </CardTitle>
-            <CardDescription>
-              Privacy, refund, and terms pages extracted from the website
-            </CardDescription>
-          </div>
+          <CardTitle>Policy Links</CardTitle>
           <Button
             variant="outline"
             size="sm"
@@ -295,12 +274,12 @@ export function PolicyLinksCard({ domainId, initialScanStatus }: PolicyLinksCard
             {extracting ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Extracting...
+                Rescanning…
               </>
             ) : (
               <>
-                <RefreshCw className="h-4 w-4 mr-2" />
-                {hasAnyData ? "Re-extract" : "Extract"}
+                <RotateCw className="h-4 w-4 mr-2" />
+                Rescan
               </>
             )}
           </Button>
@@ -345,28 +324,13 @@ export function PolicyLinksCard({ domainId, initialScanStatus }: PolicyLinksCard
               return (
                 <div
                   key={policyType}
-                  className={`rounded-lg border p-4 ${
-                    link?.verifiedOk
-                      ? "bg-success/5 border-success/30"
-                      : !link
-                        ? "bg-muted/30 border-muted"
-                        : "bg-caution/5 border-caution/30"
-                  }`}
+                  className="rounded-lg border p-4"
                 >
                   <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-start gap-3 min-w-0 flex-1">
-                      <div className="mt-0.5 text-muted-foreground">
-                        {config.icon}
-                      </div>
-                      <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium">{config.label}</span>
-                          {getStatusBadge(link, summaryData)}
-                          {(link || summaryData?.method) && getMethodBadge(link?.discoveryMethod || summaryData?.method || null)}
+                          <span className="text-sm font-medium text-muted-foreground">{config.label}</span>
                         </div>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {config.description}
-                        </p>
                         {link ? (
                           <a
                             href={link.url}
@@ -394,20 +358,13 @@ export function PolicyLinksCard({ domainId, initialScanStatus }: PolicyLinksCard
                             No policy link found
                           </p>
                         )}
-                        {/* Inline Expandable Details - aligned with link text */}
-                        {link && <PolicyDetails link={link} />}
-                      </div>
                     </div>
-                    {link?.statusCode && (
+                    {link && (
                       <Badge
-                        variant={
-                          link.statusCode >= 200 && link.statusCode < 400
-                            ? "outline"
-                            : "destructive"
-                        }
+                        variant={link.statusCode && link.statusCode >= 200 && link.statusCode < 400 ? "success" : "destructive"}
                         className="text-xs"
                       >
-                        {link.statusCode}
+                        {link.statusCode && link.statusCode >= 200 && link.statusCode < 400 ? "Active" : "Inactive"}
                       </Badge>
                     )}
                   </div>
@@ -417,34 +374,6 @@ export function PolicyLinksCard({ domainId, initialScanStatus }: PolicyLinksCard
           </div>
         )}
 
-        {/* Extraction Methods Summary */}
-        {data?.summary?.attempts && (
-          <div className="text-xs text-muted-foreground border-t pt-3">
-            <div className="flex flex-wrap gap-2 items-center">
-              <span>Methods tried:</span>
-              {data.summary.attempts.homepage_html && (
-                <Badge variant="outline" className="text-xs">
-                  Homepage HTML
-                </Badge>
-              )}
-              {data.summary.attempts.common_paths && (
-                <Badge variant="outline" className="text-xs">
-                  Common paths
-                </Badge>
-              )}
-              {data.summary.attempts.chromium_render && (
-                <Badge variant="outline" className="text-xs">
-                  Browser render
-                </Badge>
-              )}
-              {data.summary.attempts.keyword_proximity && (
-                <Badge variant="outline" className="text-xs">
-                  Keyword proximity
-                </Badge>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* Bot Protection Warning */}
         {data?.summary?.notes?.includes("bot protection") && (

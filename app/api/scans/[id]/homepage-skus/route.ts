@@ -11,7 +11,7 @@ const querySchema = z.object({
   search: z.string().nullish().transform(v => v || undefined),
   hasPrice: z.enum(["true", "false"]).nullish().transform(v => v || undefined),
   minConfidence: z.coerce.number().int().min(0).max(100).nullish().transform(v => v ?? undefined),
-  sortBy: z.enum(["confidence", "amount", "title"]).default("confidence"),
+  sortBy: z.enum(["confidence", "amount", "title", "productUrl"]).default("confidence"),
   sortDir: z.enum(["asc", "desc"]).default("desc"),
 });
 
@@ -141,6 +141,8 @@ export async function GET(
       orderBy.amount = query.sortDir;
     } else if (query.sortBy === "title") {
       orderBy.title = query.sortDir;
+    } else if (query.sortBy === "productUrl") {
+      orderBy.productUrl = query.sortDir;
     }
 
     // Get total count

@@ -22,13 +22,13 @@ const badgeVariants = cva(
           "border-transparent bg-caution text-caution-foreground",
         // Subtle variants (tinted backgrounds)
         "success-subtle":
-          "border-success/20 bg-success-tint text-success",
+          "border-transparent bg-success-tint text-success",
         "warning-subtle":
-          "border-warning/20 bg-warning-tint text-warning",
+          "border-transparent bg-warning-tint text-warning",
         "danger-subtle":
-          "border-destructive/20 bg-danger-tint text-destructive",
+          "border-transparent bg-danger-tint text-destructive",
         "info-subtle":
-          "border-primary/20 bg-info-tint text-primary",
+          "border-transparent bg-info-tint text-primary",
       },
     },
     defaultVariants: {

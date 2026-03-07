@@ -39,3 +39,15 @@ next-env.d.ts
 /generated
 dev.db
 dev.db-journal
+
+# yarn pnp
+.pnp.*
+.yarn/
+
+# binary assets
+*.key
+*.pptx
+*.ppt
+
+# notebooks
+notebooks/

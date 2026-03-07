@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { RotateCw, Loader2, ClipboardCheck, X, AlertTriangle } from "lucide-react";
+import { useNotifications } from "@/components/notification-context";
 
 interface RescanButtonProps {
   scanId: string;
@@ -23,6 +24,7 @@ export function RescanButton({ scanId, domainId, isManuallyRisky = false, initia
   const [isRisky, setIsRisky] = useState(isManuallyRisky);
   const [mounted, setMounted] = useState(false);
   const router = useRouter();
+  const { startPolling, addNotification } = useNotifications();
 
   const closeModal = useCallback(() => {
     setShowReviewModal(false);
@@ -70,6 +72,9 @@ export function RescanButton({ scanId, domainId, isManuallyRisky = false, initia
     setIsRescanning(true);
 
     try {
+      // Start polling immediately so the notification system can detect completion
+      startPolling();
+
       const response = await fetch(`/api/scans/${scanId}/rescan`, {
         method: "POST",
         headers: {
@@ -82,10 +87,17 @@ export function RescanButton({ scanId, domainId, isManuallyRisky = false, initia
         throw new Error("Failed to rescan");
       }
 
+      // Rescan complete — directly notify (polling can't detect synchronous rescans)
+      const data = await response.json();
+      if (data.id && data.normalizedUrl) {
+        addNotification(data.id, data.normalizedUrl);
+      }
+
       router.refresh();
     } catch (error) {
       console.error("Rescan error:", error);
-      alert("Failed to rescan. Please try again.");
+      // Don't alert on timeout — the scan may still be running in the background
+      // and the polling system will detect completion
     } finally {
       setIsRescanning(false);
     }

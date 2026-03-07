@@ -1,24 +1,78 @@
 import { Suspense } from "react";
+import { prisma } from "@/lib/prisma";
 import HomePageContent from "./home-content";
 
-export default function HomePage() {
+export const dynamic = "force-dynamic";
+
+async function getRecentScans() {
+  const domains = await prisma.domain.findMany({
+    include: {
+      dataPoints: {
+        where: {
+          key: {
+            in: ["domain_risk_assessment", "ai_generated_likelihood"],
+          },
+        },
+      },
+      scans: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          status: true,
+          createdAt: true,
+        },
+      },
+    },
+    orderBy: {
+      lastCheckedAt: "desc",
+    },
+    take: 5,
+  });
+
+  return domains.map((domain) => {
+    let riskScore: number | null = null;
+    const riskDp = domain.dataPoints.find((dp) => dp.key === "domain_risk_assessment");
+    if (riskDp) {
+      try {
+        riskScore = JSON.parse(riskDp.value).overall_risk_score ?? null;
+      } catch { /* skip */ }
+    }
+
+    return {
+      id: domain.id,
+      normalizedUrl: domain.normalizedUrl,
+      isActive: domain.isActive,
+      riskScore,
+      lastCheckedAt: domain.lastCheckedAt?.toISOString() ?? null,
+      scanStatus: domain.scans[0]?.status ?? null,
+    };
+  });
+}
+
+export default async function HomePage() {
+  const recentScans = await getRecentScans();
+
   return (
     <Suspense fallback={<HomePageSkeleton />}>
-      <HomePageContent />
+      <HomePageContent recentScans={recentScans} />
     </Suspense>
   );
 }
 
 function HomePageSkeleton() {
   return (
-    <div className="max-w-2xl mx-auto space-y-8">
-      <div className="text-center space-y-4">
-        <h1 className="text-3xl font-bold tracking-tight">Website Risk Intel</h1>
-        <p className="text-muted-foreground">
-          Scan websites to extract intelligence signals for risk assessment
-        </p>
+    <div className="max-w-xl mx-auto pt-10 space-y-6">
+      <div className="text-center space-y-2">
+        <div className="h-8 w-48 bg-muted animate-pulse rounded-lg mx-auto" />
+        <div className="h-4 w-72 bg-muted/60 animate-pulse rounded mx-auto" />
       </div>
-      <div className="h-64 bg-muted/50 rounded-lg animate-pulse" />
+      <div className="h-14 bg-muted/50 rounded-xl animate-pulse" />
+      <div className="space-y-2">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-12 bg-muted/30 rounded-lg animate-pulse" />
+        ))}
+      </div>
     </div>
   );
 }

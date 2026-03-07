@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Loader2 } from "lucide-react";
+import { RotateCw, Loader2 } from "lucide-react";
 
 interface RiskScanButtonProps {
   domainId: string;
@@ -51,12 +51,12 @@ export function RiskScanButton({ domainId, hasExistingRiskScore }: RiskScanButto
       {isScanning ? (
         <>
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          Analyzing...
+          Rescanning…
         </>
       ) : (
         <>
-          <AlertTriangle className="mr-2 h-4 w-4" />
-          {hasExistingRiskScore ? "Re-scan Risk" : "Risk Scan"}
+          <RotateCw className="mr-2 h-4 w-4" />
+          Rescan
         </>
       )}
     </Button>

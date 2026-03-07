@@ -4,6 +4,7 @@ import "./globals.css";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/ui/sidebar";
 import { Header } from "@/components/ui/header";
+import { Providers } from "@/components/providers";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -12,8 +13,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Website Risk Intel",
-  description: "Website intelligence scanner for risk assessment",
+  title: "Waldo",
+  description: "Find risky websites before they find you",
 };
 
 export default function RootLayout({
@@ -24,16 +25,15 @@ export default function RootLayout({
   return (
     <html lang="en" className={inter.variable}>
       <body className={cn(inter.className, "antialiased min-h-screen bg-background")}>
-        <Header />
-        <Sidebar />
-        <div className="min-h-[calc(100vh-4rem)] flex flex-col pl-16">
-          <main className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-8">
-            {children}
-          </main>
-          <footer className="border-t bg-card/50 py-5 text-center text-xs text-muted-foreground">
-            <span className="opacity-70">&copy; {new Date().getFullYear()} Website Risk Intel</span>
-          </footer>
-        </div>
+        <Providers>
+          <Header />
+          <Sidebar />
+          <div className="min-h-[calc(100vh-4rem)] flex flex-col md:pl-16">
+            <main className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-8">
+              {children}
+            </main>
+          </div>
+        </Providers>
       </body>
     </html>
   );

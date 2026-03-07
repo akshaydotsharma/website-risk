@@ -5,7 +5,7 @@
 @layer base {
   :root {
     /* App shell background - subtle neutral tint instead of pure white */
-    --background: 220 20% 97%;
+    --background: 220 14% 95%;
     --foreground: 222.2 84% 4.9%;
 
     /* Cards remain white for depth contrast */
@@ -166,9 +166,11 @@
 @layer components {
   .text-page-title {
     @apply text-2xl sm:text-3xl font-bold tracking-tight text-foreground;
+    text-wrap: balance;
   }
   .text-page-subtitle {
     @apply text-sm sm:text-base text-muted-foreground leading-relaxed;
+    text-wrap: balance;
   }
   .text-section-title {
     @apply text-lg font-semibold tracking-tight;
@@ -178,6 +180,14 @@
   }
   .text-label {
     @apply text-xs font-medium text-muted-foreground uppercase tracking-wider;
+  }
+  .text-hero {
+    @apply text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-foreground;
+    text-wrap: balance;
+  }
+  .text-hero-sub {
+    @apply text-base sm:text-lg text-muted-foreground leading-relaxed max-w-xl;
+    text-wrap: balance;
   }
 }
 
@@ -217,6 +227,11 @@
     @apply hover:shadow-md hover:border-primary/20 hover:-translate-y-px;
     @apply active:translate-y-0 active:shadow-sm;
   }
+  .card-elevated {
+    @apply bg-card border rounded-xl shadow-sm;
+    @apply transition-all duration-200 ease-out;
+    @apply hover:shadow-md;
+  }
 }
 
 /* Table row hover with actions */
@@ -239,6 +254,50 @@
 @layer components {
   .score-bar {
     @apply h-full rounded-full transition-all duration-500 ease-out;
+  }
+}
+
+/* ================================================================
+   Risk Score Ring / Circle Component
+   SVG-based circular score indicator
+   ================================================================ */
+@layer components {
+  .score-ring {
+    @apply relative inline-flex items-center justify-center;
+  }
+  .score-ring-track {
+    fill: none;
+    stroke: hsl(var(--muted));
+    stroke-linecap: round;
+  }
+  .score-ring-fill {
+    fill: none;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    transform: rotate(-90deg);
+    transform-origin: center;
+  }
+  .score-ring-value {
+    @apply absolute inset-0 flex flex-col items-center justify-center;
+  }
+  .score-ring-number {
+    @apply font-bold tabular-nums leading-none;
+  }
+  .score-ring-label {
+    @apply text-[10px] font-medium text-muted-foreground uppercase tracking-wider mt-0.5;
+  }
+}
+
+/* Domain card for scan history */
+@layer components {
+  .domain-card {
+    @apply bg-card border rounded-xl p-4 sm:p-5;
+    @apply transition-all duration-200 ease-out cursor-pointer;
+    @apply hover:shadow-md hover:border-primary/20 hover:-translate-y-[2px];
+    @apply active:translate-y-0 active:shadow-sm;
+  }
+  .domain-card:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
 }
 
@@ -275,5 +334,96 @@
   }
   .stat-card-value {
     @apply text-2xl sm:text-3xl font-bold tabular-nums tracking-tight;
+  }
+}
+
+/* Hero gradient for home page */
+@layer components {
+  .hero-gradient {
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -20%, hsl(var(--primary) / 0.08), transparent),
+      radial-gradient(ellipse 60% 30% at 80% 50%, hsl(var(--primary) / 0.04), transparent),
+      radial-gradient(ellipse 60% 30% at 20% 50%, hsl(200 70% 50% / 0.03), transparent);
+  }
+  .hero-gradient-subtle {
+    background:
+      radial-gradient(ellipse 80% 60% at 50% -10%, hsl(var(--primary) / 0.06), transparent);
+  }
+}
+
+/* Subtle grid pattern for backgrounds */
+@layer utilities {
+  .bg-grid-pattern {
+    background-image:
+      linear-gradient(hsl(var(--border) / 0.5) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--border) / 0.5) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+}
+
+/* Signal pill chips */
+@layer components {
+  .signal-pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium;
+    @apply transition-colors duration-150;
+  }
+  .signal-pill-risk {
+    @apply bg-danger-tint text-destructive;
+  }
+  .signal-pill-warning {
+    @apply bg-warning-tint text-warning;
+  }
+  .signal-pill-safe {
+    @apply bg-success-tint text-success;
+  }
+  .signal-pill-neutral {
+    @apply bg-muted/50 text-muted-foreground;
+  }
+}
+
+/* Numeric tabular display */
+@layer utilities {
+  .font-tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Recent scan item */
+@layer components {
+  .recent-scan-item {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2.5;
+    @apply transition-all duration-150 ease-out cursor-pointer;
+    @apply hover:bg-muted/60;
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+}
+
+/* Search bar prominent style */
+@layer components {
+  .search-hero {
+    @apply w-full rounded-2xl border-2 border-border bg-card shadow-sm;
+    @apply transition-all duration-200 ease-out;
+  }
+  .search-hero textarea {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+    transition: scrollbar-color 0.3s;
+  }
+  .search-hero textarea:hover,
+  .search-hero textarea:active,
+  .search-hero textarea:focus {
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  .search-hero textarea::-webkit-scrollbar {
+    width: 6px;
+  }
+  .search-hero textarea::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 3px;
+  }
+  .search-hero textarea:hover::-webkit-scrollbar-thumb,
+  .search-hero textarea:active::-webkit-scrollbar-thumb,
+  .search-hero textarea:focus::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
   }
 }

@@ -226,6 +226,16 @@ export function getScoreBgColorSubtle(score: number): string {
 }
 
 /**
+ * Get the left border color class for a score value (for tile accents).
+ */
+export function getScoreBorderLeftColor(score: number): string {
+  if (score <= SCORE_THRESHOLDS.LOW) return "border-l-success";
+  if (score <= SCORE_THRESHOLDS.MEDIUM) return "border-l-warning";
+  if (score <= SCORE_THRESHOLDS.HIGH) return "border-l-caution";
+  return "border-l-destructive";
+}
+
+/**
  * Get the human-readable label for a risk score.
  *
  * @param score - Number between 0-100

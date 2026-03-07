@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Bot, Loader2 } from "lucide-react";
+import { RotateCw, Loader2 } from "lucide-react";
 
 interface AiScanButtonProps {
   domainId: string;
@@ -51,12 +51,12 @@ export function AiScanButton({ domainId, hasExistingAiScore }: AiScanButtonProps
       {isScanning ? (
         <>
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          Analyzing...
+          Rescanning…
         </>
       ) : (
         <>
-          <Bot className="mr-2 h-4 w-4" />
-          {hasExistingAiScore ? "Re-analyze AI" : "AI Scan"}
+          <RotateCw className="mr-2 h-4 w-4" />
+          Rescan
         </>
       )}
     </Button>

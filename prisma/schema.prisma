@@ -7,36 +7,37 @@ datasource db {
 }
 
 model Domain {
-  id            String            @id
-  normalizedUrl String            @unique
-  isActive      Boolean           @default(false)
-  statusCode    Int?
-  lastCheckedAt DateTime?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  dataPoints    DomainDataPoint[]
-  urlInputs     UrlInput[]
-  scans         WebsiteScan[]
-
-  // Manual investigation fields
+  id                 String              @id
+  normalizedUrl      String              @unique
+  isActive           Boolean             @default(false)
+  statusCode         Int?
+  lastCheckedAt      DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  riskScore          Int?
   isManuallyRisky    Boolean             @default(false)
   manualRiskNote     String?
   manualRiskSetAt    DateTime?
+  dataPoints         DomainDataPoint[]
   investigationNotes InvestigationNote[]
+  screenshots        Screenshot[]
+  urlInputs          UrlInput[]
+  scans              WebsiteScan[]
 
   @@index([normalizedUrl])
   @@index([isManuallyRisky])
-  @@index([lastCheckedAt(sort: Desc)]) // For pagination queries
+  @@index([lastCheckedAt(sort: Desc)])
+  @@index([riskScore(sort: Desc)])
 }
 
 model InvestigationNote {
   id           String   @id @default(cuid())
   domainId     String
-  content      String   @db.Text
-  type         String   @default("note") // "note" or "review"
-  riskDecision String?  // "risky" or "not_risky" - only for review type
+  content      String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+  riskDecision String?
+  type         String   @default("note")
   domain       Domain   @relation(fields: [domainId], references: [id], onDelete: Cascade)
 
   @@index([domainId])
@@ -73,6 +74,7 @@ model WebsiteScan {
   policyLinks    PolicyLink[]
   artifacts      ScanArtifact[]
   dataPoints     ScanDataPoint[]
+  screenshots    Screenshot[]
   signalLogs     SignalLog[]
   domain         Domain          @relation(fields: [domainId], references: [id], onDelete: Cascade)
 
@@ -80,7 +82,7 @@ model WebsiteScan {
   @@index([url])
   @@index([checkedAt])
   @@index([status])
-  @@index([domainId, status, createdAt(sort: Desc)]) // For filtered scan queries
+  @@index([domainId, status, createdAt(sort: Desc)])
 }
 
 model DomainDataPoint {
@@ -113,7 +115,7 @@ model ScanDataPoint {
 
   @@index([scanId])
   @@index([key])
-  @@index([scanId, key]) // Composite index for data point lookups
+  @@index([scanId, key])
 }
 
 model CrawlFetchLog {
@@ -139,7 +141,7 @@ model CrawlFetchLog {
   @@index([scanId])
   @@index([url])
   @@index([createdAt])
-  @@index([scanId, statusCode]) // For active status check queries
+  @@index([scanId, statusCode])
 }
 
 model UserPreference {
@@ -238,56 +240,124 @@ model PolicyLink {
   @@index([url])
 }
 
-// =============================================================================
-// Homepage Similarity Compare Models
-// =============================================================================
-
 model HomepageArtifact {
-  id            String   @id @default(cuid())
-  url           String // input URL
-  finalUrl      String? // URL after redirects
+  id            String               @id @default(cuid())
+  url           String
+  finalUrl      String?
   domain        String
-  fetchMethod   String   @default("http") // "http" for MVP
+  fetchMethod   String               @default("http")
   statusCode    Int?
   contentType   String?
-  ok            Boolean  @default(false)
-  redirectChain String?  @db.Text // JSON string[]
+  ok            Boolean              @default(false)
+  redirectChain String?
   latencyMs     Int?
   bytes         Int?
   htmlSha256    String?
   textSha256    String?
-  htmlSnippet   String?  @db.Text // truncated ~100KB
-  textSnippet   String?  @db.Text // truncated ~16KB
-  features      String?  @db.Text // JSON: extracted features
-  embedding     String?  @db.Text // JSON: embedding vector
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  comparisonsA HomepageComparison[] @relation("ArtifactA")
-  comparisonsB HomepageComparison[] @relation("ArtifactB")
-
+  htmlSnippet   String?
+  textSnippet   String?
+  features      String?
+  embedding     String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  pageType      String               @default("homepage")
   @@index([domain])
   @@index([url])
   @@index([htmlSha256])
+  @@index([pageType])
 }
 
-model HomepageComparison {
-  id           String   @id @default(cuid())
-  urlA         String
-  urlB         String
-  artifactAId  String
-  artifactBId  String
-  overallScore Int // 0-100
-  textScore    Int // 0-100
-  domScore     Int // 0-100
-  confidence   Int // 0-100
-  reasons      String?  @db.Text // JSON string[]
-  featureDiff  String?  @db.Text // JSON: stats/deltas for UI
-  createdAt    DateTime @default(now())
+model AboutUsAnalysisRun {
+  id           String                @id @default(cuid())
+  status       String                @default("pending")
+  domainIds    String
+  domainCount  Int
+  pairCount    Int                   @default(0)
+  clusterCount Int                   @default(0)
+  flaggedCount Int                   @default(0)
+  summary      String?
+  error        String?
+  createdAt    DateTime              @default(now())
+  completedAt  DateTime?
+  name         String?
+  pairs        AboutUsAnalysisPair[]
 
-  artifactA HomepageArtifact @relation("ArtifactA", fields: [artifactAId], references: [id], onDelete: Cascade)
-  artifactB HomepageArtifact @relation("ArtifactB", fields: [artifactBId], references: [id], onDelete: Cascade)
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
 
-  @@index([urlA])
-  @@index([urlB])
+model AboutUsAnalysisPair {
+  id                  String             @id @default(cuid())
+  runId               String
+  domainAId           String
+  domainBId           String
+  domainAUrl          String
+  domainBUrl          String
+  textScore           Int
+  sharedSentences     String?
+  sharedSentenceCount Int                @default(0)
+  keywordHitsA        String?
+  keywordHitsB        String?
+  clusterId           Int?
+  flagged             Boolean            @default(false)
+  flagReasons         String?
+  pageScores          String?
+  createdAt           DateTime           @default(now())
+  run                 AboutUsAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, domainAId, domainBId])
+  @@index([runId])
+  @@index([flagged])
+  @@index([clusterId])
+}
+
+model DomainSimilarityPair {
+  id                  String   @id @default(cuid())
+  domainAId           String
+  domainBId           String
+  domainAUrl          String
+  domainBUrl          String
+  compositeScore      Int      // max across page types (with bonuses)
+  sharedSentences     String?  // JSON array of shared sentences
+  sharedSentenceCount Int      @default(0)
+  pageScores          String?  // JSON array of per-page-type scores
+  keywordHitsA        String?  // JSON array
+  keywordHitsB        String?  // JSON array
+  flagged             Boolean  @default(false)
+  flagReasons         String?  // JSON array
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([domainAId, domainBId])
+  @@index([domainAId])
+  @@index([domainBId])
+  @@index([compositeScore(sort: Desc)])
+  @@index([flagged])
+}
+
+model Screenshot {
+  id           String       @id @default(cuid())
+  domainId     String
+  url          String
+  captureType  String       @default("auto")
+  format       String       @default("png")
+  width        Int
+  height       Int
+  fileSize     Int
+  data         String
+  scanId       String?
+  error        String?
+  durationMs   Int?
+  createdAt    DateTime     @default(now())
+  pageHeight   Int?
+  segment      String       @default("full")
+  segmentGroup String?
+  segmentIndex Int          @default(0)
+  domain       Domain       @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  scan         WebsiteScan? @relation(fields: [scanId], references: [id])
+
+  @@index([domainId])
+  @@index([domainId, createdAt(sort: Desc)])
+  @@index([scanId])
+  @@index([segmentGroup])
 }

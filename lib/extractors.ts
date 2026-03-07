@@ -7,9 +7,12 @@ import {
   shouldUseBrowser,
   hasHiddenContactContent,
   findContactLinksWithBrowser,
+  findAboutLinksWithBrowser,
   type ContactLinkResult,
+  type AboutLinkResult,
 } from "./browser";
 import { prisma } from "./prisma";
+import { decodeCfEmails } from "./extractHomepageArtifact";
 
 // Lazy-initialize Anthropic client to avoid build-time errors
 let anthropic: Anthropic | null = null;
@@ -80,6 +83,7 @@ async function rateLimitedClaudeCall<T>(
 // Data Point #1: Contact Details Schema
 const contactDetailsSchema = z.object({
   primary_contact_page_url: z.string().nullable(),
+  about_page_url: z.string().nullable().optional(),
   emails: z.array(z.string()),
   phone_numbers: z.array(z.string()),
   addresses: z.array(z.string()),
@@ -124,6 +128,21 @@ const aiGeneratedLikelihoodSchema = z.object({
 });
 
 export type AiGeneratedLikelihood = z.infer<typeof aiGeneratedLikelihoodSchema>;
+
+// Data Point #3: About Page Schema (extracted during scan, used by comparison)
+const aboutPageSchema = z.object({
+  about_page_url: z.string().nullable(),
+  text_content: z.string().nullable(), // First ~8KB of extracted text
+  word_count: z.number().int(),
+  headings: z.array(z.string()), // Top headings from the about page
+  fetch_method: z.string(), // "http" or "browser"
+  status_code: z.number().int().nullable(),
+  blocked: z.boolean(), // Whether bot challenge was detected
+  blocked_reason: z.string().nullable(),
+  artifact_id: z.string().nullable(), // Reference to HomepageArtifact for comparison
+});
+
+export type AboutPageData = z.infer<typeof aboutPageSchema>;
 
 // Constants for artifact storage
 const MAX_HTML_SNIPPET_SIZE = 20 * 1024; // 20KB for HTML
@@ -362,6 +381,9 @@ const CONTACT_URL_PATTERNS = [
   '/contact.html',
   '/get-in-touch',
   '/reach-us',
+  // Shopify / CMS-style patterns
+  '/pages/contact-us',
+  '/pages/contact',
 ];
 
 /**
@@ -398,13 +420,13 @@ const CONTACT_PAGE_INDICATORS = [
 
 /**
  * Check if a URL is accessible and is actually a contact page (not a soft 404)
+ * Returns "accessible", "blocked" (403/503), or "not_found"
  */
-async function isUrlAccessible(url: string): Promise<boolean> {
+async function isUrlAccessibleDetailed(url: string): Promise<"accessible" | "blocked" | "not_found"> {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-    // Use GET instead of HEAD to check content for soft 404s
     const response = await fetch(url, {
       method: 'GET',
       signal: controller.signal,
@@ -416,30 +438,36 @@ async function isUrlAccessible(url: string): Promise<boolean> {
 
     clearTimeout(timeoutId);
 
-    if (!response.ok) return false;
+    if (!response.ok) {
+      if ([403, 503].includes(response.status)) return "blocked";
+      return "not_found";
+    }
 
-    // Get the content to check for soft 404s
     const content = await response.text();
 
-    // Check for strong 404 patterns - these override everything else
     const isDefinitely404 = STRONG_404_PATTERNS.some(pattern => pattern.test(content));
     if (isDefinitely404) {
       console.log(`  Soft 404 detected (strong pattern): ${url}`);
-      return false;
+      return "not_found";
     }
 
-    // Verify it actually looks like a contact page
-    // Must have at least 3 contact indicators (to avoid false positives from navigation menus)
     const contactIndicatorCount = CONTACT_PAGE_INDICATORS.filter(pattern => pattern.test(content)).length;
     if (contactIndicatorCount < 3) {
       console.log(`  Not a contact page (only ${contactIndicatorCount} indicators): ${url}`);
-      return false;
+      return "not_found";
     }
 
-    return true;
+    return "accessible";
   } catch {
-    return false;
+    return "not_found";
   }
+}
+
+/**
+ * Check if a URL is accessible and is actually a contact page (not a soft 404)
+ */
+async function isUrlAccessible(url: string): Promise<boolean> {
+  return (await isUrlAccessibleDetailed(url)) === "accessible";
 }
 
 /**
@@ -627,11 +655,39 @@ async function discoverContactPageUrl(baseUrl: string): Promise<string | null> {
   console.log(`Discovering contact page for ${baseUrl}...`);
 
   // Strategy 1: Try common contact page URL patterns (fastest)
+  let allBlocked = true;
   for (const pattern of CONTACT_URL_PATTERNS) {
     const candidateUrl = `${baseUrl}${pattern}`;
-    if (await isUrlAccessible(candidateUrl)) {
+    const result = await isUrlAccessibleDetailed(candidateUrl);
+    if (result === "accessible") {
       console.log(`Found contact page via common pattern: ${candidateUrl}`);
       return candidateUrl;
+    }
+    if (result !== "blocked") allBlocked = false;
+  }
+
+  // Strategy 1b: If ALL pattern checks were blocked (403), retry top patterns with browser
+  if (allBlocked) {
+    console.log('All HTTP pattern checks blocked, retrying top patterns with browser...');
+    const topPatterns = ['/pages/contact-us', '/pages/contact', '/contact-us', '/contact'];
+    for (const pattern of topPatterns) {
+      const candidateUrl = `${baseUrl}${pattern}`;
+      try {
+        const browserResult = await fetchWithBrowser(null, candidateUrl, "contact-probe", {
+          waitForNetworkIdle: true,
+          additionalWaitMs: 500,
+        });
+        if (browserResult.statusCode && browserResult.statusCode >= 200 && browserResult.statusCode < 400 && browserResult.content) {
+          // Quick check: is it actually a contact page?
+          const contactIndicatorCount = CONTACT_PAGE_INDICATORS.filter(p => p.test(browserResult.content || "")).length;
+          if (contactIndicatorCount >= 2) {
+            console.log(`Found contact page via browser pattern probe: ${candidateUrl} (${contactIndicatorCount} indicators)`);
+            return candidateUrl;
+          }
+        }
+      } catch (e) {
+        // Browser probe failed, continue
+      }
     }
   }
 
@@ -700,8 +756,8 @@ async function fetchAndCleanPage(url: string, useBrowser: boolean = false): Prom
       console.log(`[fetchAndCleanPage] Browser result - status: ${result.statusCode}, contentLength: ${result.content?.length || 0}`);
 
       if (result.content) {
-        // Use extractTextContent for better LLM processing
-        const extracted = extractTextContent(result.content);
+        // Decode Cloudflare email obfuscation, then extract text
+        const extracted = extractTextContent(decodeCfEmails(result.content));
         console.log(`[fetchAndCleanPage] Extracted text length: ${extracted.length}`);
         return extracted;
       }
@@ -733,8 +789,8 @@ async function fetchAndCleanPage(url: string, useBrowser: boolean = false): Prom
         return fetchAndCleanPage(url, true);
       }
 
-      // Use extractTextContent for better LLM processing
-      return extractTextContent(rawHtml);
+      // Decode Cloudflare email obfuscation, then extract text
+      return extractTextContent(decodeCfEmails(rawHtml));
     }
 
     // If we got 403 or other error, retry with browser (bot protection bypass)
@@ -776,8 +832,9 @@ export async function extractDataPoint(
     console.log(`[extractDataPoint] Homepage content length: ${websiteContent.length}`);
     const sources: string[] = [url];
 
-    // Track discovered contact page URL to override OpenAI's guess
+    // Track discovered contact/about page URLs to override Claude's guess
     let discoveredContactPageUrl: string | null = null;
+    let discoveredAboutPageUrl: string | null = null;
 
     // For contact details, discover and fetch the contact page
     // Use browser for contact pages since they often have expandable sections
@@ -826,7 +883,34 @@ export async function extractDataPoint(
         }
       }
 
-      // Cleanup browser after contact page fetching
+      // Discover about page URL using browser-based link discovery
+      try {
+        const aboutLinks = await findAboutLinksWithBrowser(baseUrl);
+        // Validate each discovered URL — pick the first one that returns 200
+        for (const link of aboutLinks) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const resp = await fetch(link.url, {
+              method: "HEAD",
+              signal: controller.signal,
+              redirect: "follow",
+              headers: { "User-Agent": "Mozilla/5.0" },
+            });
+            clearTimeout(timeoutId);
+            if (resp.ok) {
+              discoveredAboutPageUrl = link.url;
+              break;
+            }
+          } catch {
+            // Link failed to fetch, try next
+          }
+        }
+      } catch {
+        // About page discovery failed
+      }
+
+      // Cleanup browser after contact/about page fetching
       await closeBrowser();
     }
 
@@ -875,6 +959,11 @@ export async function extractDataPoint(
     // This ensures we use our validated URL instead of Claude's guess
     if (dataPointKey === "contact_details" && discoveredContactPageUrl) {
       validatedValue.primary_contact_page_url = discoveredContactPageUrl;
+    }
+
+    // Set about_page_url from browser-based discovery
+    if (dataPointKey === "contact_details" && discoveredAboutPageUrl) {
+      validatedValue.about_page_url = discoveredAboutPageUrl;
     }
 
     return {
@@ -932,7 +1021,9 @@ export async function extractDataPointFromContent(
     let websiteContent = "";
 
     for (const [pageUrl, content] of crawledPages) {
-      const cleanedContent = extractTextContent(content);
+      // Decode Cloudflare email obfuscation before text extraction
+      const deobfuscated = decodeCfEmails(content);
+      const cleanedContent = extractTextContent(deobfuscated);
       if (cleanedContent) {
         const label = pageUrl === url ? "Homepage" : pageUrl;
         websiteContent += `\n\n--- ${label} ---\n\n${cleanedContent}`;
@@ -988,7 +1079,49 @@ export async function extractDataPointFromContent(
       );
       if (contactPageUrl) {
         validatedValue.primary_contact_page_url = contactPageUrl;
+      } else if (!validatedValue.primary_contact_page_url) {
+        // Fallback: run full contact page discovery (includes browser probing for bot-protected sites)
+        try {
+          const baseUrl = new URL(url);
+          const discoveredContactUrl = await discoverContactPageUrl(`${baseUrl.protocol}//${baseUrl.host}`);
+          if (discoveredContactUrl) {
+            validatedValue.primary_contact_page_url = discoveredContactUrl;
+            console.log(`Contact page discovered via fallback: ${discoveredContactUrl}`);
+          }
+        } catch (e) {
+          console.error("Contact page discovery fallback failed:", e);
+        }
       }
+
+      // Find an about page URL from the crawled pages
+      const aboutPageUrl = Array.from(crawledPages.keys()).find(s =>
+        /\/about(?:-us|us)?(?:$|\/|\?|#)|\/our-(?:story|company|team)|\/who-we-are|\/company(?:$|\/)/i.test(s)
+      );
+      if (aboutPageUrl) {
+        validatedValue.about_page_url = aboutPageUrl;
+      } else {
+        // Fallback: use browser-based discovery for non-standard about page URLs.
+        // Trust browser-discovered links directly — HEAD validation fails on
+        // Cloudflare/bot-protected sites even though the link is valid.
+        try {
+          const baseUrl = new URL(url);
+          const aboutLinks = await findAboutLinksWithBrowser(`${baseUrl.protocol}//${baseUrl.host}`);
+          if (aboutLinks.length > 0) {
+            validatedValue.about_page_url = aboutLinks[0].url;
+          }
+        } catch {
+          // Browser about discovery failed
+        } finally {
+          await closeBrowser();
+        }
+      }
+    }
+
+    // Filter out Cloudflare email obfuscation artifacts
+    if (dataPointKey === "contact_details" && validatedValue.emails) {
+      validatedValue.emails = validatedValue.emails.filter(
+        (e: string) => !/\[email[^\]]*protected\]|email-protection/i.test(e)
+      );
     }
 
     return {
@@ -1924,6 +2057,7 @@ Based on the above, provide your AI-generated likelihood assessment. Remember:
 
   try {
     // Rate-limited Claude call with automatic retry on 429 errors
+    // Use assistant prefill to force JSON output
     const response = await rateLimitedClaudeCall(() =>
       getAnthropic().messages.create({
         model: "claude-sonnet-4-20250514",
@@ -1931,6 +2065,7 @@ Based on the above, provide your AI-generated likelihood assessment. Remember:
         system: systemPrompt,
         messages: [
           { role: "user", content: userPrompt },
+          { role: "assistant", content: "{" },
         ],
       })
     );
@@ -1940,7 +2075,8 @@ Based on the above, provide your AI-generated likelihood assessment. Remember:
       throw new Error("No response from Claude");
     }
 
-    let content = textBlock.text.trim();
+    // Prepend the "{" from the prefill since the response continues from there
+    let content = "{" + textBlock.text.trim();
     content = content.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
 
     const parsed = JSON.parse(content);

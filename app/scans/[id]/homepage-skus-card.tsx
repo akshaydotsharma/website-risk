@@ -25,7 +25,7 @@ import {
   Package,
   DollarSign,
   ImageIcon,
-  RefreshCw,
+  RotateCw,
   Loader2,
   Tag,
   TrendingDown,
@@ -85,10 +85,10 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
   const [search, setSearch] = useState("");
   const [hasPrice, setHasPrice] = useState(false);
   const [page, setPage] = useState(1);
-  const [sortBy, setSortBy] = useState<"confidence" | "amount" | "title">("confidence");
+  const [sortBy, setSortBy] = useState<"confidence" | "amount" | "title" | "productUrl">("confidence");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  const pageSize = 20;
+  const pageSize = 10;
 
   const fetchData = useCallback(async () => {
     try {
@@ -187,7 +187,7 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
     }
   };
 
-  const toggleSort = (column: "confidence" | "amount" | "title") => {
+  const toggleSort = (column: "confidence" | "amount" | "title" | "productUrl") => {
     if (sortBy === column) {
       setSortDir(sortDir === "asc" ? "desc" : "asc");
     } else {
@@ -213,15 +213,7 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
     <Card>
       <CardHeader className="pb-4">
         <div className="flex items-center justify-between">
-          <div className="space-y-1.5">
-            <CardTitle className="flex items-center gap-2">
-              <ShoppingCart className="h-5 w-5" />
-              Homepage SKUs
-            </CardTitle>
-            <CardDescription>
-              Product/SKU elements detected on the homepage
-            </CardDescription>
-          </div>
+          <CardTitle>Homepage SKUs</CardTitle>
           <Button
             variant="outline"
             size="sm"
@@ -231,12 +223,12 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
             {extracting ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Extracting...
+                Rescanning…
               </>
             ) : (
               <>
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Re-extract
+                <RotateCw className="h-4 w-4 mr-2" />
+                Rescan
               </>
             )}
           </Button>
@@ -363,9 +355,7 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
                         onClick={() => toggleSort("title")}
                       >
                         Title
-                        {sortBy === "title" && (
-                          <ArrowUpDown className="h-3 w-3" />
-                        )}
+                        <ArrowUpDown className={`h-3 w-3 ${sortBy === "title" ? "text-foreground" : "text-muted-foreground/40"}`} />
                       </button>
                     </TableHead>
                     <TableHead className="w-[15%]">
@@ -374,21 +364,25 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
                         onClick={() => toggleSort("amount")}
                       >
                         Price
-                        {sortBy === "amount" && (
-                          <ArrowUpDown className="h-3 w-3" />
-                        )}
+                        <ArrowUpDown className={`h-3 w-3 ${sortBy === "amount" ? "text-foreground" : "text-muted-foreground/40"}`} />
                       </button>
                     </TableHead>
-                    <TableHead className="w-[25%]">Product Link</TableHead>
+                    <TableHead className="w-[25%]">
+                      <button
+                        className="flex items-center gap-1 hover:text-foreground"
+                        onClick={() => toggleSort("productUrl")}
+                      >
+                        Product Link
+                        <ArrowUpDown className={`h-3 w-3 ${sortBy === "productUrl" ? "text-foreground" : "text-muted-foreground/40"}`} />
+                      </button>
+                    </TableHead>
                     <TableHead className="w-[10%]">
                       <button
                         className="flex items-center gap-1 hover:text-foreground"
                         onClick={() => toggleSort("confidence")}
                       >
                         Confidence
-                        {sortBy === "confidence" && (
-                          <ArrowUpDown className="h-3 w-3" />
-                        )}
+                        <ArrowUpDown className={`h-3 w-3 ${sortBy === "confidence" ? "text-foreground" : "text-muted-foreground/40"}`} />
                       </button>
                     </TableHead>
                   </TableRow>
@@ -521,11 +515,6 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
           </>
         )}
 
-        {/* Extraction method note */}
-        <div className="text-xs text-muted-foreground border-t pt-3">
-          Extraction method: heuristic_v1 (homepage-only, no external APIs).
-          Results may be incomplete for sites with dynamically-loaded product grids.
-        </div>
       </CardContent>
     </Card>
   );
