@@ -579,7 +579,7 @@ async function verifyPolicyUrl(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-    let response: Response;
+    let response!: Response;
     let headFailed = false;
     try {
       response = await fetch(url, {
