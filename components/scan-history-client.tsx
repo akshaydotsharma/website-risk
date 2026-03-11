@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Pagination } from "@/components/ui/pagination";
 import { ScanHistoryTable } from "@/components/scan-history-table";
 import { PageHeader } from "@/components/page-header";
 import { useNotifications } from "@/components/notification-context";
@@ -214,23 +215,6 @@ export function ScanHistoryClient({ initialDomains, stats, currentPage: initialP
                 </>
               )}
             </Button>
-            <Button
-              variant="outline"
-              onClick={handleRunSimilarity}
-              disabled={selected.size < 2 || startingSimilarity}
-            >
-              {startingSimilarity ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Starting…
-                </>
-              ) : (
-                <>
-                  <FileSearch className="h-4 w-4" aria-hidden="true" />
-                  Run Similarity{selected.size >= 2 ? ` (${selected.size})` : ""}
-                </>
-              )}
-            </Button>
             <Link href="/">
               <Button>
                 <Plus className="h-4 w-4" aria-hidden="true" />
@@ -283,55 +267,11 @@ export function ScanHistoryClient({ initialDomains, stats, currentPage: initialP
       />
 
       {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between pt-2">
-          <p className="text-sm text-muted-foreground">
-            Page {page} of {totalPages}
-          </p>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => goToPage(page - 1)}
-              disabled={page <= 1}
-            >
-              Previous
-            </Button>
-            {Array.from({ length: totalPages }, (_, i) => i + 1)
-              .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 2)
-              .reduce<(number | "...")[]>((acc, p, i, arr) => {
-                if (i > 0 && p - (arr[i - 1] ?? 0) > 1) acc.push("...");
-                acc.push(p);
-                return acc;
-              }, [])
-              .map((item, i) =>
-                item === "..." ? (
-                  <span key={`ellipsis-${i}`} className="px-2 text-sm text-muted-foreground">
-                    ...
-                  </span>
-                ) : (
-                  <Button
-                    key={item}
-                    variant={item === page ? "default" : "outline"}
-                    size="sm"
-                    className="w-9"
-                    onClick={() => goToPage(item as number)}
-                  >
-                    {item}
-                  </Button>
-                )
-              )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => goToPage(page + 1)}
-              disabled={page >= totalPages}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      <Pagination
+        currentPage={page}
+        totalPages={totalPages}
+        onPageChange={goToPage}
+      />
     </>
   );
 }

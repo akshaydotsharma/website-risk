@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { DataPointKey, PAGE_TEXT_KEYS } from "@/lib/constants";
 import { safeJsonParse } from "@/lib/utils";
 import { SimilarityTabs } from "@/components/similarity/similarity-tabs";
+import { Fingerprint } from "lucide-react";
 
 interface SimilaritySummary {
   similarCount: number;
@@ -36,13 +37,31 @@ export async function SimilarityCard({ domainId, domainUrl }: { domainId: string
     where: { domainId_key: { domainId, key: "similarity_summary" } },
   });
 
-  if (!dataPoint) return null;
+  if (!dataPoint) {
+    return (
+      <div className="bg-card border rounded-xl p-8 text-center">
+        <Fingerprint className="h-8 w-8 mx-auto mb-3 text-muted-foreground/40" aria-hidden="true" />
+        <p className="text-sm font-medium text-muted-foreground">Similarity analysis not available</p>
+        <p className="text-xs text-muted-foreground/70 mt-1 max-w-sm mx-auto">
+          Content similarity data will appear here after a scan completes and enough domains have been analyzed for comparison.
+        </p>
+      </div>
+    );
+  }
 
   let summary: SimilaritySummary;
   try {
     summary = JSON.parse(dataPoint.value);
   } catch {
-    return null;
+    return (
+      <div className="bg-card border rounded-xl p-8 text-center">
+        <Fingerprint className="h-8 w-8 mx-auto mb-3 text-muted-foreground/40" aria-hidden="true" />
+        <p className="text-sm font-medium text-muted-foreground">Similarity analysis not available</p>
+        <p className="text-xs text-muted-foreground/70 mt-1 max-w-sm mx-auto">
+          The similarity data could not be read. Try rescanning the domain.
+        </p>
+      </div>
+    );
   }
 
   // Load all similarity pairs for this domain

@@ -27,6 +27,19 @@ function NotificationBell() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open, unreadCount, markAllRead]);
 
+  // Close on Escape key
+  useEffect(() => {
+    if (!open) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        if (unreadCount > 0) markAllRead();
+        setOpen(false);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [open, unreadCount, markAllRead]);
+
   const handleToggle = () => {
     // Mark read when closing, not opening — so user sees highlights first
     if (open && unreadCount > 0) markAllRead();
@@ -42,14 +55,14 @@ function NotificationBell() {
       >
         <Bell className="h-5 w-5" aria-hidden="true" />
         {unreadCount > 0 && (
-          <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-primary text-[10px] font-bold text-primary-foreground flex items-center justify-center">
+          <span className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-primary text-[10px] font-bold text-primary-foreground flex items-center justify-center ring-[1.5px] ring-card">
             {unreadCount > 9 ? "9+" : unreadCount}
           </span>
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 rounded-xl border bg-card shadow-lg z-50 overflow-hidden">
+        <div className="absolute right-0 top-full mt-2 w-80 rounded-xl border border-border/60 bg-card/95 backdrop-blur-sm shadow-[0_4px_12px_-2px_hsl(var(--foreground)/0.08),0_12px_24px_-4px_hsl(var(--foreground)/0.12)] z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b">
             <span className="text-sm font-semibold">Notifications</span>
@@ -77,7 +90,7 @@ function NotificationBell() {
                   return (
                     <div
                       key={n.id}
-                      className={`flex items-start gap-3 px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer group ${!n.read ? (isInvestigation ? "bg-purple-500/5" : "bg-primary/5") : ""}`}
+                      className={`flex items-start gap-3 px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer group ${!n.read ? (isInvestigation ? "bg-purple-500/8 border-l-2 border-l-purple-500" : "bg-primary/8 border-l-2 border-l-primary") : ""}`}
                       onClick={() => {
                         router.push(isInvestigation ? `/investigations/${n.domainId}` : `/scans/${n.domainId}`);
                         setOpen(false);
@@ -141,7 +154,7 @@ export function Header() {
             className="flex items-center gap-3 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-lg"
             aria-label="Waldo home"
           >
-            <div className="w-9 h-9 rounded-lg bg-primary flex items-center justify-center shadow-sm group-hover:shadow-md transition-shadow duration-200">
+            <div className="w-9 h-9 rounded-lg bg-primary flex items-center justify-center shadow-sm ring-1 ring-primary/20 group-hover:scale-105 group-hover:shadow-md transition-all duration-200">
               <img src="/waldo-icon.png" alt="" className="h-5 w-5" aria-hidden="true" />
             </div>
             <span className="hidden sm:block font-semibold text-base leading-tight tracking-tight">Waldo</span>

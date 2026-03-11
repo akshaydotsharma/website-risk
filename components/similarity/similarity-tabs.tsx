@@ -163,7 +163,7 @@ function SummaryTab({
     <div className="space-y-6">
       {/* ---- Stats strip ---- */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="stat-card border-l-4 border-l-transparent">
+        <div className="stat-card border-l-4 border-l-muted/30">
           <StatLabel label="Domains" tooltip="Number of domains compared against" />
           <p className="stat-card-value">{summary.similarCount}</p>
         </div>
@@ -179,7 +179,7 @@ function SummaryTab({
             {summary.maxSimilarity}
           </p>
         </div>
-        <div className="stat-card border-l-4 border-l-transparent">
+        <div className="stat-card border-l-4 border-l-muted/30">
           <StatLabel label="Clusters" tooltip="Number of content clusters this domain belongs to" />
           <p className="stat-card-value">{summary.clusterSize > 0 ? 1 : 0}</p>
         </div>
@@ -221,16 +221,16 @@ function SummaryTab({
                 </p>
                 <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
                   <div className="flex flex-wrap gap-1.5">
-                    <span className="group/chip inline-flex items-center gap-1 text-xs font-medium pl-3 pr-1.5 py-1 rounded-full bg-teal-50 dark:bg-teal-500/15 text-teal-700 dark:text-teal-300">
+                    <span className="group/chip inline-flex items-center gap-1 text-xs font-medium pl-3 pr-1.5 py-1 rounded-full bg-[hsl(var(--cluster-tint))] text-[hsl(var(--cluster-foreground))]">
                       <Globe className="h-3 w-3 opacity-50" aria-hidden="true" />
                       <span className="pr-0.5">{domainUrl}</span>
                       <span className="inline-flex items-center gap-0.5">
-                        <a href={`https://${domainUrl}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-1 rounded-full hover:bg-teal-100 dark:hover:bg-teal-500/25 text-teal-600/60 hover:text-teal-700 transition-colors" aria-label="Open website">
+                        <a href={`https://${domainUrl}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-1 rounded-full hover:bg-[hsl(var(--cluster-tint))] text-[hsl(var(--cluster-foreground)/0.6)] hover:text-[hsl(var(--cluster-foreground))] transition-colors" aria-label="Open website">
                           <ExternalLink className="h-3 w-3" />
                         </a>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <Link href={`/scans/${domainId}`} className="p-1 rounded-full hover:bg-teal-100 dark:hover:bg-teal-500/25 text-teal-600/60 hover:text-teal-700 transition-colors" aria-label="Open scan">
+                            <Link href={`/scans/${domainId}`} className="p-1 rounded-full hover:bg-[hsl(var(--cluster-tint))] text-[hsl(var(--cluster-foreground)/0.6)] hover:text-[hsl(var(--cluster-foreground))] transition-colors" aria-label="Open scan">
                               <Info className="h-3 w-3" />
                             </Link>
                           </TooltipTrigger>
@@ -243,18 +243,18 @@ function SummaryTab({
                       return (
                         <span
                           key={url}
-                          className="group/chip inline-flex items-center gap-1 text-xs font-medium pl-3 pr-1.5 py-1 rounded-full bg-teal-50/60 dark:bg-teal-500/10 text-teal-700/80 dark:text-teal-300/80"
+                          className="group/chip inline-flex items-center gap-1 text-xs font-medium pl-3 pr-1.5 py-1 rounded-full bg-[hsl(var(--cluster-tint)/0.6)] text-[hsl(var(--cluster-foreground)/0.8)]"
                         >
                           <Globe className="h-3 w-3 opacity-50" aria-hidden="true" />
                           <span className="pr-0.5">{url}</span>
                           <span className="inline-flex items-center gap-0.5">
-                            <a href={`https://${url}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-1 rounded-full hover:bg-teal-100 dark:hover:bg-teal-500/25 text-teal-600/60 hover:text-teal-700 transition-colors" aria-label="Open website">
+                            <a href={`https://${url}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-1 rounded-full hover:bg-[hsl(var(--cluster-tint))] text-[hsl(var(--cluster-foreground)/0.6)] hover:text-[hsl(var(--cluster-foreground))] transition-colors" aria-label="Open website">
                               <ExternalLink className="h-3 w-3" />
                             </a>
                             {matched && (
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <Link href={`/scans/${matched.domainId}`} className="p-1 rounded-full hover:bg-teal-100 dark:hover:bg-teal-500/25 text-teal-600/60 hover:text-teal-700 transition-colors" aria-label="Open scan">
+                                  <Link href={`/scans/${matched.domainId}`} className="p-1 rounded-full hover:bg-[hsl(var(--cluster-tint))] text-[hsl(var(--cluster-foreground)/0.6)] hover:text-[hsl(var(--cluster-foreground))] transition-colors" aria-label="Open scan">
                                     <Info className="h-3 w-3" />
                                   </Link>
                                 </TooltipTrigger>
@@ -349,13 +349,13 @@ function ClusterGraphNode({ node }: { node: GraphNode }) {
   return (
     <div className="bg-background border rounded-lg shadow-sm px-3 py-2.5 text-center min-w-[150px] max-w-[220px] cursor-pointer transition-all duration-200 hover:shadow-md">
       <div className="flex items-center justify-center gap-1.5 mb-1.5">
-        <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400 flex-shrink-0" />
+        <Globe className="h-3.5 w-3.5 text-[hsl(var(--cluster-foreground))] flex-shrink-0" />
         <span className="text-xs font-semibold truncate">{node.url}</span>
         <a
           href={`https://${node.url}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-muted-foreground/50 hover:text-teal-600 transition-colors"
+          className="text-muted-foreground/50 hover:text-[hsl(var(--cluster-foreground))] transition-colors"
           onClick={(e) => e.stopPropagation()}
           title="Open website"
         >
@@ -364,7 +364,7 @@ function ClusterGraphNode({ node }: { node: GraphNode }) {
         {node.domainId && (
           <Link
             href={`/scans/${node.domainId}`}
-            className="text-muted-foreground/50 hover:text-teal-600 transition-colors"
+            className="text-muted-foreground/50 hover:text-[hsl(var(--cluster-foreground))] transition-colors"
             onClick={(e) => e.stopPropagation()}
             title="Open scan"
           >
@@ -1367,11 +1367,11 @@ function AlignedSideBySide({
     <div className="divide-y">
       {/* Column headers */}
       <div className="grid grid-cols-2 divide-x">
-        <a href={pageUrlA || `https://${urlA}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 px-3 py-2 flex items-center gap-1.5 hover:underline cursor-pointer">
+        <a href={pageUrlA || `https://${urlA}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--cluster-foreground))] px-3 py-2 flex items-center gap-1.5 hover:underline cursor-pointer">
           <Globe className="h-3 w-3" />
           {urlA}
         </a>
-        <a href={pageUrlB || `https://${urlB}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 px-3 py-2 flex items-center gap-1.5 hover:underline cursor-pointer">
+        <a href={pageUrlB || `https://${urlB}`} target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--cluster-foreground))] px-3 py-2 flex items-center gap-1.5 hover:underline cursor-pointer">
           <Globe className="h-3 w-3" />
           {urlB}
         </a>
@@ -1428,7 +1428,7 @@ function TextColumn({
 
   return (
     <div className="p-4">
-      <div className="text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300 mb-3 flex items-center gap-1.5">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-[hsl(var(--cluster-foreground))] mb-3 flex items-center gap-1.5">
         <Globe className="h-3 w-3" />
         {url}
         <a href={`https://${url}`} target="_blank" rel="noopener noreferrer" className="opacity-40 hover:opacity-100 transition-opacity"><ExternalLink className="h-3 w-3" /></a>
@@ -1600,24 +1600,24 @@ function SideBySidePairCard({
           ) : (
             <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
           )}
-          <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400 flex-shrink-0" />
+          <Globe className="h-3.5 w-3.5 text-[hsl(var(--cluster-foreground))] flex-shrink-0" />
           <a
             href={`https://${targetUrl}`}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="text-sm font-medium truncate text-teal-700 dark:text-teal-300 hover:text-teal-900 hover:underline transition-colors"
+            className="text-sm font-medium truncate text-[hsl(var(--cluster-foreground))] hover:text-[hsl(var(--cluster-foreground))] hover:underline transition-colors"
           >
             {targetUrl}
           </a>
           <ArrowRight className="h-3 w-3 text-muted-foreground/50 flex-shrink-0" />
-          <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400 flex-shrink-0" />
+          <Globe className="h-3.5 w-3.5 text-[hsl(var(--cluster-foreground))] flex-shrink-0" />
           <a
             href={`https://${otherUrl}`}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="text-sm font-medium truncate text-teal-700 dark:text-teal-300 hover:text-teal-900 hover:underline transition-colors"
+            className="text-sm font-medium truncate text-[hsl(var(--cluster-foreground))] hover:text-[hsl(var(--cluster-foreground))] hover:underline transition-colors"
           >
             {otherUrl}
           </a>
@@ -1761,7 +1761,7 @@ function SharedSentencesView({
     <div className="space-y-4">
       {/* Stat cards */}
       <div className="flex items-stretch gap-3 flex-wrap">
-        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
+        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-muted/30">
           <StatLabel label="Shared Sentences" tooltip="Sentences that appear word-for-word on other domains' pages" />
           <p className="stat-card-value">{totalSentences}</p>
         </div>
@@ -1876,7 +1876,7 @@ function SharedSentenceGroupCard({
             {group.domains.map((url) => (
               <span
                 key={url}
-                className="inline-flex items-center gap-1 text-xs font-medium pl-3 pr-1.5 py-1 rounded-full bg-teal-50/60 dark:bg-teal-500/10 text-teal-700/80 dark:text-teal-300/80"
+                className="inline-flex items-center gap-1 text-xs font-medium pl-3 pr-1.5 py-1 rounded-full bg-[hsl(var(--cluster-tint)/0.6)] text-[hsl(var(--cluster-foreground)/0.8)]"
               >
                 <Globe className="h-3 w-3 opacity-50" />
                 <span className="pr-0.5">{url}</span>
@@ -1885,7 +1885,7 @@ function SharedSentenceGroupCard({
                     href={`https://${url}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="p-1 rounded-full hover:bg-teal-100 dark:hover:bg-teal-500/25 text-teal-600/50 hover:text-teal-700 transition-colors"
+                    className="p-1 rounded-full hover:bg-[hsl(var(--cluster-tint))] text-[hsl(var(--cluster-foreground)/0.5)] hover:text-[hsl(var(--cluster-foreground))] transition-colors"
                     title="Open website"
                   >
                     <ExternalLink className="h-3 w-3" />
@@ -1896,13 +1896,13 @@ function SharedSentenceGroupCard({
           </div>
 
           {/* Sentence list */}
-          <div className="border-t divide-y divide-border/50">
+          <div className="border-t px-4 py-3 space-y-2">
             {visibleSentences.map((sentence, i) => (
-              <div key={i} className="px-4 py-3 flex gap-3 hover:bg-muted/20 transition-colors">
+              <div key={i} className="bg-muted/30 border border-border/40 rounded-lg p-3 text-sm leading-relaxed border-l-2 border-l-caution flex gap-3 hover:bg-muted/40 transition-colors">
                 <span className="text-[10px] font-mono tabular-nums text-muted-foreground/60 pt-0.5 w-5 text-right flex-shrink-0 select-none">
                   {globalIndex + i + 1}
                 </span>
-                <p className="text-sm text-foreground/90 leading-relaxed flex-1">
+                <p className="text-foreground/90 flex-1">
                   <span className="text-muted-foreground/40 select-none">&ldquo;</span>
                   {sentence}
                   <span className="text-muted-foreground/40 select-none">&rdquo;</span>
@@ -2041,11 +2041,11 @@ function SideBySideSubView({
     <div className="space-y-4">
       {/* Stats */}
       <div className="flex items-stretch gap-3 flex-wrap">
-        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
+        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-muted/30">
           <StatLabel label="Unique Domains" tooltip="Number of unique domains involved in similarity pairs" />
           <p className="stat-card-value">{uniqueUrls}</p>
         </div>
-        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
+        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-muted/30">
           <StatLabel label="Comparable Pairs" tooltip="Domain pairs with shared sentences or similarity above 40%" />
           <p className="stat-card-value">{relevantPairs.length}</p>
         </div>
@@ -2056,7 +2056,7 @@ function SideBySideSubView({
           </p>
         </div>
         {totalShared > 0 && (
-          <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
+          <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-muted/30">
             <StatLabel label="Shared Sentences" tooltip="Total shared sentences found across all comparable pairs" />
             <p className="stat-card-value">{totalShared}</p>
           </div>
@@ -2264,12 +2264,12 @@ export function UniquenessCheckTab({
             {isFlagged ? "Flagged" : "Clean"}
           </p>
         </div>
-        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
+        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-muted/30">
           <StatLabel label="Keyword Hits" tooltip={`Sentences containing: ${SCAM_KEYWORDS.map((k) => `"${k}"`).join(", ")}`} />
           <p className="stat-card-value">{excerpts.length}</p>
         </div>
         {scanAllDomains && (
-          <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
+          <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-muted/30">
             <StatLabel label="Flagged Domains" tooltip="Number of domains with uniqueness keyword hits" />
             <p className={`stat-card-value ${flaggedDomainCount > 0 ? "text-orange-600" : ""}`}>{flaggedDomainCount} / {domainsToScan.length}</p>
           </div>
@@ -2282,8 +2282,8 @@ export function UniquenessCheckTab({
           {Array.from(groupedByDomain.entries()).map(([dId, group]) => (
             <div key={dId} className="rounded-lg border overflow-hidden">
               <div className="px-4 py-3 bg-muted/30 border-b flex items-center gap-2">
-                <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
-                <a href={`https://${group.url}`} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-teal-700 dark:text-teal-300 hover:underline">{group.url}</a>
+                <Globe className="h-3.5 w-3.5 text-[hsl(var(--cluster-foreground))]" />
+                <a href={`https://${group.url}`} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-[hsl(var(--cluster-foreground))] hover:underline">{group.url}</a>
                 <Badge variant="secondary" className="text-[10px]">
                   {group.excerpts.length} {group.excerpts.length === 1 ? "hit" : "hits"}
                 </Badge>
@@ -2308,8 +2308,8 @@ export function UniquenessCheckTab({
       ) : isFlagged ? (
         <div className="rounded-lg border overflow-hidden">
           <div className="px-4 py-3 bg-muted/30 border-b flex items-center gap-2">
-            <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
-            <a href={`https://${domainUrl}`} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-teal-700 dark:text-teal-300 hover:underline">{domainUrl}</a>
+            <Globe className="h-3.5 w-3.5 text-[hsl(var(--cluster-foreground))]" />
+            <a href={`https://${domainUrl}`} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-[hsl(var(--cluster-foreground))] hover:underline">{domainUrl}</a>
             <Badge variant="secondary" className="text-[10px]">
               {excerpts.length} {excerpts.length === 1 ? "hit" : "hits"}
             </Badge>

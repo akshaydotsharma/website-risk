@@ -11,8 +11,10 @@ import {
   FileSearch,
   Network,
   X,
+  Pin,
+  PinOff,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Tooltip,
   TooltipTrigger,
@@ -60,8 +62,12 @@ function isItemActive(pathname: string, href: string) {
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { mobileOpen, setMobileOpen } = useSidebar();
+  const { mobileOpen, setMobileOpen, pinned, togglePinned } = useSidebar();
   const [hovered, setHovered] = useState(false);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Determine if the sidebar is expanded (pinned OR hovered)
+  const expanded = pinned || hovered;
 
   useEffect(() => {
     setMobileOpen(false);
@@ -76,7 +82,30 @@ export function Sidebar() {
     return () => document.removeEventListener("keydown", handler);
   }, [mobileOpen, setMobileOpen]);
 
-  const renderNav = (expanded: boolean) => (
+  const handleMouseEnter = useCallback(() => {
+    // If pinned, no need for hover logic
+    if (pinned) return;
+    hoverTimerRef.current = setTimeout(() => {
+      setHovered(true);
+    }, 150);
+  }, [pinned]);
+
+  const handleMouseLeave = useCallback(() => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+    setHovered(false);
+  }, []);
+
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    };
+  }, []);
+
+  const renderNav = (isExpanded: boolean) => (
     <nav className="flex flex-col gap-1 p-2 pt-4">
       {navItems.map((item) => {
         const hasChildren = item.children && item.children.length > 0;
@@ -92,14 +121,14 @@ export function Sidebar() {
           <div key={item.href}>
             {hasChildren ? (
               <>
-                {/* Parent group — always show children when expanded */}
+                {/* Parent group -- always show children when expanded */}
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <div
                       className={cn(
-                        "flex items-center rounded-lg w-full",
-                        expanded ? "h-9 px-3 gap-2" : "h-11 px-0",
-                        expanded
+                        "flex items-center rounded-lg w-full relative",
+                        isExpanded ? "h-9 px-3 gap-2" : "h-11 px-0",
+                        isExpanded
                           ? "text-sm font-medium text-foreground mt-3 first:mt-0"
                           : cn(
                               "justify-center",
@@ -109,7 +138,11 @@ export function Sidebar() {
                             )
                       )}
                     >
-                      {!expanded && (
+                      {/* Active indicator bar for collapsed state */}
+                      {!isExpanded && isParentActive && (
+                        <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r-full bg-primary shadow-[2px_0_8px_0_hsl(var(--primary)/0.3)]" />
+                      )}
+                      {!isExpanded && (
                         <div className="flex items-center justify-center w-12">
                           <item.icon
                             className={cn(
@@ -120,7 +153,7 @@ export function Sidebar() {
                           />
                         </div>
                       )}
-                      {expanded && (
+                      {isExpanded && (
                         <>
                           <item.icon
                             className={cn(
@@ -134,13 +167,13 @@ export function Sidebar() {
                       )}
                     </div>
                   </TooltipTrigger>
-                  {!expanded && (
+                  {!isExpanded && (
                     <TooltipContent side="right">{item.label}</TooltipContent>
                   )}
                 </Tooltip>
 
-                {/* Children — always visible when expanded, no icons, indented */}
-                {expanded && (
+                {/* Children -- always visible when expanded, no icons, indented */}
+                {isExpanded && (
                   <div className="mt-0.5 space-y-0.5 pl-8">
                     {item.children!.map((child) => {
                       const isChildActive = isItemActive(pathname, child.href);
@@ -174,19 +207,23 @@ export function Sidebar() {
                     href={item.href}
                     aria-current={isActive ? "page" : undefined}
                     className={cn(
-                      "flex items-center rounded-lg",
+                      "flex items-center rounded-lg relative",
                       "transition-colors duration-150",
-                      expanded ? "h-9 px-3 gap-2" : "h-11 px-0 justify-center",
+                      isExpanded ? "h-9 px-3 gap-2" : "h-11 px-0 justify-center",
                       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                       isActive
                         ? "bg-primary/10 text-primary font-medium"
                         : "text-muted-foreground hover:bg-muted hover:text-foreground"
                     )}
                   >
+                    {/* Active indicator bar for collapsed state */}
+                    {!isExpanded && isActive && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r-full bg-primary shadow-[2px_0_8px_0_hsl(var(--primary)/0.3)]" />
+                    )}
                     <div
                       className={cn(
                         "flex items-center justify-center flex-shrink-0",
-                        expanded ? "w-auto" : "w-12"
+                        isExpanded ? "w-auto" : "w-12"
                       )}
                     >
                       <item.icon
@@ -197,14 +234,14 @@ export function Sidebar() {
                         aria-hidden="true"
                       />
                     </div>
-                    {expanded && (
+                    {isExpanded && (
                       <span className="whitespace-nowrap text-sm">
                         {item.label}
                       </span>
                     )}
                   </Link>
                 </TooltipTrigger>
-                {!expanded && (
+                {!isExpanded && (
                   <TooltipContent side="right">{item.label}</TooltipContent>
                 )}
               </Tooltip>
@@ -217,22 +254,61 @@ export function Sidebar() {
 
   return (
     <>
-      {/* Desktop sidebar — collapsed by default, expand on hover */}
+      {/* Desktop sidebar -- collapsed by default, expand on hover or when pinned */}
       <aside
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
         className={cn(
           "fixed left-0 top-16 z-40 h-[calc(100vh-4rem)]",
-          "hidden md:block",
+          "hidden md:flex md:flex-col",
           "bg-card border-r",
-          "transition-all duration-300 ease-in-out",
+          "transition-all duration-300 [transition-timing-function:cubic-bezier(0.25,0.46,0.45,0.94)]",
           "overflow-hidden",
-          hovered ? "w-56 shadow-lg" : "w-16"
+          expanded ? "w-56 shadow-lg" : "w-16"
         )}
         role="navigation"
         aria-label="Main navigation"
       >
-        {renderNav(hovered)}
+        <div className="flex-1 overflow-y-auto">
+          {renderNav(expanded)}
+        </div>
+
+        {/* Pin toggle button at the bottom */}
+        <div className="border-t p-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={togglePinned}
+                className={cn(
+                  "flex items-center rounded-lg w-full transition-colors duration-150",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  expanded ? "h-9 px-3 gap-2" : "h-9 justify-center",
+                  pinned
+                    ? "text-primary bg-primary/10 rounded-lg hover:bg-primary/15"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+                aria-label={pinned ? "Unpin sidebar" : "Pin sidebar"}
+                aria-pressed={pinned}
+              >
+                {pinned ? (
+                  <Pin className="h-4 w-4 flex-shrink-0 transition-transform duration-200" aria-hidden="true" />
+                ) : (
+                  <PinOff className="h-4 w-4 flex-shrink-0 transition-transform duration-200" aria-hidden="true" />
+                )}
+                {expanded && (
+                  <span className="whitespace-nowrap text-sm">
+                    {pinned ? "Unpin sidebar" : "Pin sidebar"}
+                  </span>
+                )}
+              </button>
+            </TooltipTrigger>
+            {!expanded && (
+              <TooltipContent side="right">
+                {pinned ? "Unpin sidebar" : "Pin sidebar"}
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </div>
       </aside>
 
       {/* Mobile overlay */}

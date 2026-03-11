@@ -325,7 +325,7 @@ function ClusterUrlChips({ urls, nodes, selectedId, setSelectedId }: {
             onClick={handleCopy}
             className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
           >
-            {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? <span className="animate-in zoom-in-50 duration-150"><Check className="h-3.5 w-3.5 text-green-600" /></span> : <Copy className="h-3.5 w-3.5" />}
           </button>
         </TooltipTrigger>
         <TooltipContent side="top" className="text-xs">
@@ -432,7 +432,7 @@ function SimilarityHeatmap({ nodes, pairs, hubId }: { nodes: DomainNode[]; pairs
               {nodes.map((col, ci) => {
                 if (row.id === col.id) {
                   return (
-                    <div key={col.id} className="w-14 h-8 shrink-0 flex items-center justify-center">
+                    <div key={col.id} className="w-14 h-8 shrink-0 flex items-center justify-center rounded-sm m-px">
                       <span className="text-[9px] text-muted-foreground/30">—</span>
                     </div>
                   );
@@ -445,7 +445,7 @@ function SimilarityHeatmap({ nodes, pairs, hubId }: { nodes: DomainNode[]; pairs
                   <Tooltip key={col.id}>
                     <TooltipTrigger asChild>
                       <div
-                        className={`w-14 h-8 shrink-0 flex items-center justify-center cursor-default transition-all duration-100 ${
+                        className={`w-14 h-8 shrink-0 flex items-center justify-center cursor-default transition-all duration-100 rounded-sm m-px ${
                           isHovered ? "ring-2 ring-primary ring-inset" : ""
                         }`}
                         style={{ backgroundColor: score > 0 ? scoreColorHsl(score) : undefined }}

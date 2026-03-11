@@ -291,7 +291,7 @@ export function InvestigationDetail({
                   if (e.key === "Escape") { setEditing(false); setEditName(data.name || "Investigation"); }
                 }}
                 onBlur={handleSaveName}
-                className="text-page-title bg-transparent border-b border-primary outline-none min-w-0"
+                className="text-page-title border border-primary/50 rounded-md px-2 py-1 bg-card shadow-inner transition-all duration-200 outline-none min-w-0"
               />
             </div>
           ) : (
@@ -299,7 +299,7 @@ export function InvestigationDetail({
               onClick={() => setEditing(true)}
               className="group flex items-center gap-2 min-w-0 hover:bg-muted rounded-md px-1 -mx-1 transition-colors"
             >
-              <h1 className="text-page-title truncate">{data.name || "Investigation"}</h1>
+              <h1 className="text-page-title truncate underline decoration-muted-foreground/20 underline-offset-4 decoration-dotted">{data.name || "Investigation"}</h1>
               <Pencil className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
             </button>
           )}
@@ -342,11 +342,20 @@ export function InvestigationDetail({
                 {data.status === "analyzing" ? "Running similarity analysis..." : `Scanning ${data.scannedCount} of ${data.domainCount} domains...`}
               </span>
             </div>
-            <div className="w-full bg-muted rounded-full h-2">
+            <div className="w-full bg-muted rounded-full h-2.5">
               <div
-                className="bg-primary h-2 rounded-full transition-all duration-500"
+                className="bg-gradient-to-r from-primary/80 to-primary h-2.5 rounded-full transition-all duration-500 relative overflow-hidden"
                 style={{ width: `${data.status === "analyzing" ? 95 : progress}%` }}
-              />
+              >
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    backgroundImage: "linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent)",
+                    backgroundSize: "200% 100%",
+                    animation: "shimmer 2s ease-in-out infinite",
+                  }}
+                />
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -369,30 +378,34 @@ export function InvestigationDetail({
             label="Domains"
             value={data.summary.totalDomains}
             icon={<Globe className="h-4 w-4" />}
+            tint="bg-gradient-to-b from-primary/5 to-transparent"
           />
           <SummaryCard
             label="Clusters"
             value={data.summary.clusterCount}
             icon={<Network className="h-4 w-4" />}
+            tint="bg-gradient-to-b from-violet-500/5 to-transparent"
           />
           <SummaryCard
             label="Avg Risk"
             value={data.summary.avgRiskScore}
             icon={<BarChart3 className="h-4 w-4" />}
             color={data.summary.avgRiskScore >= 60 ? "text-destructive" : data.summary.avgRiskScore >= 30 ? "text-warning" : "text-success"}
+            tint={data.summary.avgRiskScore >= 60 ? "bg-gradient-to-b from-destructive/5 to-transparent" : data.summary.avgRiskScore >= 30 ? "bg-gradient-to-b from-amber-500/5 to-transparent" : "bg-gradient-to-b from-emerald-500/5 to-transparent"}
           />
           <SummaryCard
             label="Uniqueness"
             valueText={data.summary.hasUniqueness ? "Yes" : "No"}
             icon={<Fingerprint className="h-4 w-4" />}
             color={data.summary.hasUniqueness ? "text-destructive" : "text-success"}
+            tint={data.summary.hasUniqueness ? "bg-gradient-to-b from-destructive/5 to-transparent" : "bg-gradient-to-b from-emerald-500/5 to-transparent"}
           />
         </div>
       )}
 
       {/* Tabbed Content: Domains + Similarity tabs */}
       <Tabs
-        className="bg-[hsl(220,14%,97.5%)] dark:bg-card rounded-xl p-4 sm:p-6"
+        className="bg-[hsl(var(--surface-elevated))] dark:bg-card rounded-xl p-4 sm:p-6"
         tabs={[
           { key: "domains", label: "Domains" },
           ...(similarityData
@@ -446,6 +459,15 @@ export function InvestigationDetail({
 
             {/* Domain Cards — grouped by cluster, scrollable */}
             <div className="overflow-y-auto overscroll-contain pr-1 space-y-1" style={{ maxHeight: "600px" }}>
+              {sortedDomains.length === 0 && searchQuery.trim() !== "" ? (
+                <div className="py-12 text-center">
+                  <Search className="h-8 w-8 mx-auto mb-3 text-muted-foreground/40" aria-hidden="true" />
+                  <p className="text-sm font-medium text-muted-foreground">No domains match your search</p>
+                  <p className="text-xs text-muted-foreground/70 mt-1">
+                    Try a different search term or clear the filter.
+                  </p>
+                </div>
+              ) : null}
               {(() => {
                 // Group domains by cluster for visual grouping
                 const grouped: { cluster: number | null; key: string; domains: typeof sortedDomains }[] = [];
@@ -663,15 +685,17 @@ function SummaryCard({
   valueText,
   icon,
   color,
+  tint,
 }: {
   label: string;
   value?: number;
   valueText?: string;
   icon: React.ReactNode;
   color?: string;
+  tint?: string;
 }) {
   return (
-    <Card>
+    <Card className={tint || ""}>
       <CardContent className="py-4 px-4">
         <div className="flex items-center gap-2 text-muted-foreground mb-1">
           {icon}

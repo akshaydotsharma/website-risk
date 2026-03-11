@@ -14,8 +14,8 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
 
-    /* Brand primary - orange */
-    --primary: 28 80% 52%;
+    /* Brand primary - deep indigo */
+    --primary: 230 65% 50%;
     --primary-foreground: 0 0% 100%;
 
     /* Secondary and muted */
@@ -32,20 +32,20 @@
     --destructive-foreground: 0 0% 100%;
     --border: 220 13% 91%;
     --input: 220 13% 91%;
-    --ring: 28 80% 52%;
+    --ring: 230 65% 50%;
     --radius: 0.5rem;
 
-    /* Semantic status colors for scores and indicators */
+    /* Severity Scale: Low (success/green, 0-30) → Medium (warning/yellow, 31-50) → High (caution/orange, 51-70) → Critical (destructive/red, 71+) */
     --success: 152 69% 40%;
     --success-foreground: 0 0% 100%;
     --warning: 38 92% 50%;
     --warning-foreground: 38 92% 10%;
     --caution: 25 95% 53%;
     --caution-foreground: 0 0% 100%;
-    --link: 28 80% 52%;
+    --link: 230 65% 50%;
 
     /* Surface tints for semantic states (very subtle backgrounds) */
-    --info-tint: 28 70% 97%;
+    --info-tint: 230 60% 97%;
     --success-tint: 152 60% 96%;
     --warning-tint: 38 80% 96%;
     --danger-tint: 0 80% 97%;
@@ -54,10 +54,17 @@
     --data-tint: 200 70% 97%;
     --policy-tint: 152 60% 97%;
 
+    /* Elevated surface (stat tiles, sticky headers) */
+    --surface-elevated: 220 14% 97.5%;
+
+    /* Cluster chip colors (similarity clusters) */
+    --cluster-tint: 160 84% 95%;
+    --cluster-foreground: 160 84% 30%;
+
     /* Shadow scale */
-    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.03), 0 1px 3px 0 rgb(0 0 0 / 0.05);
-    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
-    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.05), 0 4px 6px -4px rgb(0 0 0 / 0.05);
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.03), 0 0 0 1px rgb(0 0 0 / 0.02);
+    --shadow-md: 0 2px 4px -1px rgb(0 0 0 / 0.04), 0 4px 8px -2px rgb(0 0 0 / 0.06);
+    --shadow-lg: 0 4px 8px -2px rgb(0 0 0 / 0.04), 0 12px 20px -4px rgb(0 0 0 / 0.08);
   }
 
   .dark {
@@ -67,7 +74,7 @@
     --card-foreground: 210 40% 98%;
     --popover: 222.2 47% 9%;
     --popover-foreground: 210 40% 98%;
-    --primary: 28 85% 55%;
+    --primary: 230 70% 60%;
     --primary-foreground: 0 0% 100%;
     --secondary: 217.2 32.6% 17.5%;
     --secondary-foreground: 210 40% 98%;
@@ -79,7 +86,7 @@
     --destructive-foreground: 210 40% 98%;
     --border: 217.2 32.6% 20%;
     --input: 217.2 32.6% 17.5%;
-    --ring: 28 85% 55%;
+    --ring: 230 70% 60%;
 
     /* Semantic status colors for scores and indicators */
     --success: 152 69% 45%;
@@ -88,10 +95,10 @@
     --warning-foreground: 38 93% 10%;
     --caution: 25 95% 58%;
     --caution-foreground: 25 95% 10%;
-    --link: 28 85% 60%;
+    --link: 230 70% 60%;
 
     /* Surface tints for semantic states (dark mode) */
-    --info-tint: 28 50% 12%;
+    --info-tint: 230 40% 12%;
     --success-tint: 152 40% 12%;
     --warning-tint: 38 40% 12%;
     --danger-tint: 0 40% 12%;
@@ -99,6 +106,13 @@
     --risk-tint: 25 40% 12%;
     --data-tint: 200 40% 12%;
     --policy-tint: 152 40% 12%;
+
+    /* Elevated surface (stat tiles, sticky headers) */
+    --surface-elevated: 220 14% 13%;
+
+    /* Cluster chip colors (similarity clusters) */
+    --cluster-tint: 160 40% 15%;
+    --cluster-foreground: 160 60% 70%;
 
     /* Shadow scale (dark) */
     --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.2);
@@ -157,7 +171,7 @@
 
   /* Selection styling */
   ::selection {
-    background: hsl(var(--primary) / 0.15);
+    background: hsl(var(--primary) / 0.2);
     color: hsl(var(--foreground));
   }
 }
@@ -191,7 +205,7 @@
   }
 }
 
-/* Transition utilities */
+/* Transitions: 150ms for micro (hover, color, opacity), 250ms for structural (panel, layout, lift) */
 @layer utilities {
   .transition-default {
     @apply transition-all duration-200 ease-out;
@@ -268,6 +282,7 @@
   .score-ring-track {
     fill: none;
     stroke: hsl(var(--muted));
+    opacity: 0.5;
     stroke-linecap: round;
   }
   .score-ring-fill {
@@ -293,8 +308,8 @@
   .domain-card {
     @apply bg-card border rounded-xl p-4 sm:p-5;
     @apply transition-all duration-200 ease-out cursor-pointer;
-    @apply hover:shadow-md hover:border-primary/20 hover:-translate-y-[2px];
-    @apply active:translate-y-0 active:shadow-sm;
+    @apply hover:shadow-[0_4px_12px_-2px_hsl(var(--foreground)/0.06)] hover:border-primary/20 hover:-translate-y-px;
+    @apply active:translate-y-0 active:shadow-sm active:bg-muted/20 active:border-primary/10 active:transition-none;
   }
   .domain-card:focus-visible {
     @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
@@ -307,7 +322,7 @@
     @apply flex flex-col items-center justify-center py-12 px-6 text-center;
   }
   .empty-state-icon {
-    @apply w-14 h-14 rounded-2xl bg-muted/50 flex items-center justify-center mb-4;
+    @apply w-14 h-14 rounded-full bg-gradient-to-b from-muted/60 to-muted/30 flex items-center justify-center mb-4;
   }
   .empty-state-title {
     @apply text-sm font-medium text-foreground mb-1;
@@ -327,7 +342,7 @@
 /* Stat card utility */
 @layer components {
   .stat-card {
-    @apply rounded-xl border bg-card p-4 sm:p-5 space-y-1;
+    @apply rounded-xl border border-border/50 bg-card p-4 sm:p-5 space-y-1;
   }
   .stat-card-label {
     @apply text-xs font-medium text-muted-foreground uppercase tracking-wider flex items-center gap-1.5;
@@ -401,8 +416,11 @@
 /* Search bar prominent style */
 @layer components {
   .search-hero {
-    @apply w-full rounded-2xl border-2 border-border bg-card shadow-sm;
+    @apply w-full rounded-2xl border border-border/80 bg-card shadow-md;
     @apply transition-all duration-200 ease-out;
+  }
+  .search-hero:focus-within {
+    @apply ring-2 ring-ring ring-offset-2 ring-offset-background border-primary/50;
   }
   .search-hero textarea {
     scrollbar-width: thin;
@@ -426,4 +444,9 @@
   .search-hero textarea:focus::-webkit-scrollbar-thumb {
     background: hsl(var(--border));
   }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }

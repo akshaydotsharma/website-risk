@@ -4,6 +4,7 @@ import "./globals.css";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/ui/sidebar";
 import { Header } from "@/components/ui/header";
+import { MainContent } from "@/components/ui/main-content";
 import { Providers } from "@/components/providers";
 
 const inter = Inter({
@@ -28,11 +29,7 @@ export default function RootLayout({
         <Providers>
           <Header />
           <Sidebar />
-          <div className="min-h-[calc(100vh-4rem)] flex flex-col md:pl-16">
-            <main className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-8">
-              {children}
-            </main>
-          </div>
+          <MainContent>{children}</MainContent>
         </Providers>
       </body>
     </html>

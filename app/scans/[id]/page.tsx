@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { DataPointKey } from "@/lib/constants";
@@ -181,7 +182,7 @@ export default async function ScanDetailPage({
     <div className="space-y-6 max-w-5xl mx-auto">
       <ScanStatusRefresher domainId={domain.id} initialScanStatus={latestScan?.status ?? null} />
       {/* Sticky Report Header */}
-      <div className="sticky top-16 z-20 px-4 sm:px-6 py-4 bg-[hsl(220,14%,97.5%)]/75 backdrop-blur-xl border rounded-xl shadow-sm">
+      <div className="sticky top-16 z-20 px-4 sm:px-6 py-4 bg-[hsl(var(--surface-elevated))]/85 backdrop-blur-xl border border-border/60 rounded-xl shadow-md">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-4">
             <Link
@@ -223,7 +224,9 @@ export default async function ScanDetailPage({
       <ScanDetailTabs data={tabData} />
 
       {/* Content Similarity */}
-      <SimilarityCard domainId={domain.id} domainUrl={domain.normalizedUrl} />
+      <Suspense fallback={<SimilarityCardSkeleton />}>
+        <SimilarityCard domainId={domain.id} domainUrl={domain.normalizedUrl} />
+      </Suspense>
 
       {/* Investigation Notes - always visible below tabs */}
       <InvestigationNotes
@@ -326,14 +329,11 @@ function SummaryCard({
 
   return (
     <div>
-      {/* Last scanned — above the card */}
-      <div className="flex items-center justify-end mb-2 px-1">
-        <span className="text-xs text-muted-foreground">
-          Last scanned {domain.lastCheckedAt ? format(new Date(domain.lastCheckedAt), "MMM d, h:mm a") : "Never"}
-        </span>
-      </div>
-
-    <div className="bg-card border rounded-xl overflow-hidden">
+    <div className="relative bg-card border rounded-xl overflow-hidden">
+      {/* Last scanned — inside card */}
+      <span className="absolute top-4 right-5 text-[11px] text-muted-foreground/70">
+        Last scanned {domain.lastCheckedAt ? format(new Date(domain.lastCheckedAt), "MMM d, h:mm a") : "Never"}
+      </span>
       {/* Top section: Score ring + risk signal pills */}
       <div className="p-6 flex flex-col sm:flex-row items-center gap-6 sm:gap-8">
         {/* Focal score ring */}
@@ -373,20 +373,20 @@ function SummaryCard({
           )}
 
           {/* Signal pills row */}
-          <div className="flex flex-wrap gap-2 justify-center sm:justify-start">
+          <div className="flex flex-wrap gap-1.5 justify-center sm:justify-start">
             {riskTypeScores.phishing != null && (
-              <span className={`signal-pill ${riskTypeScores.phishing > 60 ? "signal-pill-risk" : riskTypeScores.phishing > 30 ? "signal-pill-warning" : "signal-pill-safe"}`}>
-                Phishing: {riskTypeScores.phishing}
+              <span className={`signal-pill px-3 hover:scale-[1.03] transition-transform duration-100 ${riskTypeScores.phishing > 60 ? "signal-pill-risk" : riskTypeScores.phishing > 30 ? "signal-pill-warning" : "signal-pill-safe"}`}>
+                Phishing: <span className="font-semibold">{riskTypeScores.phishing}</span>
               </span>
             )}
             {riskTypeScores.shell_company != null && (
-              <span className={`signal-pill ${riskTypeScores.shell_company > 60 ? "signal-pill-risk" : riskTypeScores.shell_company > 30 ? "signal-pill-warning" : "signal-pill-safe"}`}>
-                Shell: {riskTypeScores.shell_company}
+              <span className={`signal-pill px-3 hover:scale-[1.03] transition-transform duration-100 ${riskTypeScores.shell_company > 60 ? "signal-pill-risk" : riskTypeScores.shell_company > 30 ? "signal-pill-warning" : "signal-pill-safe"}`}>
+                Shell: <span className="font-semibold">{riskTypeScores.shell_company}</span>
               </span>
             )}
             {riskTypeScores.compliance != null && (
-              <span className={`signal-pill ${riskTypeScores.compliance > 60 ? "signal-pill-risk" : riskTypeScores.compliance > 30 ? "signal-pill-warning" : "signal-pill-safe"}`}>
-                Compliance: {riskTypeScores.compliance}
+              <span className={`signal-pill px-3 hover:scale-[1.03] transition-transform duration-100 ${riskTypeScores.compliance > 60 ? "signal-pill-risk" : riskTypeScores.compliance > 30 ? "signal-pill-warning" : "signal-pill-safe"}`}>
+                Compliance: <span className="font-semibold">{riskTypeScores.compliance}</span>
               </span>
             )}
           </div>
@@ -396,7 +396,7 @@ function SummaryCard({
       {/* Bottom stat tiles */}
       <div className="grid grid-cols-3 gap-3 px-4 pb-4 pt-1">
         {/* AI Score stat */}
-        <div className={`rounded-xl p-3.5 bg-muted/60 border-l-4 flex flex-col justify-between ${aiScore !== null ? getScoreBorderLeftColor(aiScore) : "border-l-transparent"}`}>
+        <div className={`rounded-xl p-4 min-h-[88px] bg-[hsl(var(--surface-elevated))] shadow-[0_1px_2px_0_hsl(var(--foreground)/0.02)] border-l-4 flex flex-col justify-between ${aiScore !== null ? getScoreBorderLeftColor(aiScore) : "border-l-transparent"}`}>
           <p className="text-label mb-1 flex items-center gap-1">
             AI Score
             <Tooltip>
@@ -418,7 +418,7 @@ function SummaryCard({
         </div>
 
         {/* Domain Age stat */}
-        <div className={`rounded-xl p-3.5 bg-muted/60 border-l-4 flex flex-col justify-between ${rdapAvailable ? getDomainAgeBorderColor() : "border-l-transparent"}`}>
+        <div className={`rounded-xl p-4 min-h-[88px] bg-[hsl(var(--surface-elevated))] shadow-[0_1px_2px_0_hsl(var(--foreground)/0.02)] border-l-4 flex flex-col justify-between ${rdapAvailable ? getDomainAgeBorderColor() : "border-l-transparent"}`}>
           <p className="text-label mb-1 flex items-center gap-1">
             Domain Age
             <Tooltip>
@@ -442,12 +442,62 @@ function SummaryCard({
         </div>
 
         {/* SKU Count stat */}
-        <div className="rounded-xl p-3.5 bg-muted/60 border-l-4 border-l-transparent flex flex-col justify-between">
+        <div className="rounded-xl p-4 min-h-[88px] bg-[hsl(var(--surface-elevated))] shadow-[0_1px_2px_0_hsl(var(--foreground)/0.02)] border-l-4 border-l-transparent flex flex-col justify-between">
           <p className="text-label mb-1">Detected SKUs</p>
           <HomepageSkuCountClient domainId={domain.id} initialScanStatus={latestScan?.status} />
         </div>
       </div>
     </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Skeleton for SimilarityCard while it streams in via Suspense
+// =============================================================================
+
+function SimilarityCardSkeleton() {
+  return (
+    <div className="bg-card border rounded-xl overflow-hidden animate-pulse">
+      {/* Tab bar skeleton */}
+      <div className="border-b px-4 pt-4 pb-0">
+        <div className="flex gap-4">
+          <div className="h-4 w-28 bg-muted rounded mb-3" />
+          <div className="h-4 w-24 bg-muted/60 rounded mb-3" />
+          <div className="h-4 w-20 bg-muted/40 rounded mb-3" />
+        </div>
+      </div>
+      {/* Content area skeleton */}
+      <div className="p-6 space-y-4">
+        {/* Summary stats row */}
+        <div className="grid grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <div className="h-3 w-20 bg-muted/60 rounded" />
+            <div className="h-7 w-12 bg-muted rounded" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-3 w-24 bg-muted/60 rounded" />
+            <div className="h-7 w-16 bg-muted rounded" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-3 w-16 bg-muted/60 rounded" />
+            <div className="h-7 w-10 bg-muted rounded" />
+          </div>
+        </div>
+        {/* List items skeleton */}
+        <div className="space-y-3 pt-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-4 py-3 border-t first:border-t-0">
+              <div className="w-10 h-10 rounded-full bg-muted shrink-0" />
+              <div className="flex-1 space-y-2">
+                <div className="h-4 w-48 bg-muted rounded" />
+                <div className="h-3 w-32 bg-muted/60 rounded" />
+              </div>
+              <div className="h-6 w-16 bg-muted rounded-full shrink-0" />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

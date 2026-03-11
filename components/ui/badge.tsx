@@ -3,36 +3,41 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const badgeVariants = cva(
-  "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  "inline-flex items-center gap-1 rounded-full font-medium transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
   {
     variants: {
       variant: {
         default:
-          "border-transparent bg-primary text-primary-foreground",
+          "bg-primary text-primary-foreground",
         secondary:
-          "border-transparent bg-muted text-muted-foreground",
+          "bg-muted text-muted-foreground",
         destructive:
-          "border-transparent bg-destructive text-destructive-foreground",
-        outline: "border-border text-foreground bg-card",
+          "bg-destructive text-destructive-foreground",
+        outline: "border border-border text-foreground bg-card",
         success:
-          "border-transparent bg-success text-success-foreground",
+          "bg-success text-success-foreground",
         warning:
-          "border-transparent bg-warning text-warning-foreground",
+          "bg-warning text-warning-foreground",
         caution:
-          "border-transparent bg-caution text-caution-foreground",
+          "bg-caution text-caution-foreground",
         // Subtle variants (tinted backgrounds)
         "success-subtle":
-          "border-transparent bg-success-tint text-success",
+          "bg-success-tint text-success",
         "warning-subtle":
-          "border-transparent bg-warning-tint text-warning",
+          "bg-warning-tint text-warning",
         "danger-subtle":
-          "border-transparent bg-danger-tint text-destructive",
+          "bg-danger-tint text-destructive",
         "info-subtle":
-          "border-transparent bg-info-tint text-primary",
+          "bg-info-tint text-primary",
+      },
+      size: {
+        default: "px-2.5 py-0.5 text-xs",
+        sm: "px-1.5 py-0 text-[10px]",
       },
     },
     defaultVariants: {
       variant: "default",
+      size: "default",
     },
   }
 );
@@ -41,9 +46,9 @@ export interface BadgeProps
   extends React.HTMLAttributes<HTMLDivElement>,
     VariantProps<typeof badgeVariants> {}
 
-function Badge({ className, variant, ...props }: BadgeProps) {
+function Badge({ className, variant, size, ...props }: BadgeProps) {
   return (
-    <div className={cn(badgeVariants({ variant }), className)} {...props} />
+    <div className={cn(badgeVariants({ variant, size }), className)} {...props} />
   );
 }
 

@@ -35,11 +35,42 @@ export function Tabs({
   children,
 }: TabsProps) {
   const isPill = variant === "compact";
+  const tabRefs = React.useRef<Map<string, HTMLButtonElement>>(new Map());
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const currentIndex = tabs.findIndex((t) => t.key === activeTab);
+    if (currentIndex === -1) return;
+
+    let nextIndex: number | null = null;
+
+    switch (e.key) {
+      case "ArrowRight":
+        nextIndex = (currentIndex + 1) % tabs.length;
+        break;
+      case "ArrowLeft":
+        nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        break;
+      case "Home":
+        nextIndex = 0;
+        break;
+      case "End":
+        nextIndex = tabs.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    e.preventDefault();
+    const nextTab = tabs[nextIndex];
+    onTabChange(nextTab.key);
+    tabRefs.current.get(nextTab.key)?.focus();
+  };
 
   return (
     <div className={cn("w-full", className)}>
       <div
         role="tablist"
+        onKeyDown={handleKeyDown}
         className={cn(
           "flex overflow-x-auto scrollbar-hide",
           isPill
@@ -50,10 +81,15 @@ export function Tabs({
         {tabs.map((tab) => (
           <button
             key={tab.key}
+            ref={(el) => {
+              if (el) tabRefs.current.set(tab.key, el);
+              else tabRefs.current.delete(tab.key);
+            }}
             role="tab"
             aria-selected={activeTab === tab.key}
             aria-controls={`tabpanel-${tab.key}`}
             id={`tab-${tab.key}`}
+            tabIndex={activeTab === tab.key ? 0 : -1}
             onClick={() => onTabChange(tab.key)}
             className={cn(
               "flex items-center justify-center gap-1.5 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",

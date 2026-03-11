@@ -21,6 +21,8 @@ import {
   ShieldAlert,
   Search,
   ArrowUpDown,
+  ChevronUp,
+  ChevronDown,
   ChevronRight,
   Globe,
   AlertTriangle,
@@ -450,11 +452,11 @@ export function ScanHistoryTable({ domains, selected, onSelectionChange, onDomai
         />
         <Input
           type="text"
-          placeholder="Search domains\u2026"
+          placeholder="Search domains…"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           aria-label="Search scanned domains"
-          className="pl-9 h-10 bg-card"
+          className="pl-9 h-10 bg-card border-border/60 focus:border-primary/40 focus:shadow-sm transition-all duration-150 placeholder:text-muted-foreground/50"
         />
       </div>
 
@@ -465,8 +467,8 @@ export function ScanHistoryTable({ domains, selected, onSelectionChange, onDomai
         </p>
       )}
 
-      {/* Column Headers — sortable */}
-      <div className="flex items-center gap-0 pr-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+      {/* Column Headers — sortable, hidden on mobile */}
+      <div className="hidden sm:flex items-center gap-0 text-xs font-medium text-muted-foreground uppercase tracking-wider border-b border-border/40 pb-2">
         {/* Select All checkbox — aligned with row checkboxes */}
         <div
           className="shrink-0 w-10 flex items-center justify-center cursor-pointer"
@@ -504,32 +506,35 @@ export function ScanHistoryTable({ domains, selected, onSelectionChange, onDomai
             aria-label="Select all domains"
           />
         </div>
-        <div className="flex items-center gap-4 flex-1 pl-4 sm:pl-5">
-        <button
-          className={`w-14 shrink-0 text-center cursor-pointer hover:text-foreground transition-colors ${sortField === "riskScore" ? "text-primary" : ""}`}
-          onClick={() => handleSort("riskScore")}
-        >
-          Score <span className="text-[10px]">{sortField === "riskScore" ? (sortDirection === "desc" ? "↓" : "↑") : "↕"}</span>
-        </button>
-        <button
-          className={`flex-1 min-w-0 text-left cursor-pointer hover:text-foreground transition-colors ${sortField === "normalizedUrl" ? "text-primary" : ""}`}
-          onClick={() => handleSort("normalizedUrl")}
-        >
-          URL <span className="text-[10px]">{sortField === "normalizedUrl" ? (sortDirection === "desc" ? "↓" : "↑") : "↕"}</span>
-        </button>
-        <button
-          className={`w-20 shrink-0 text-left cursor-pointer hover:text-foreground transition-colors ${sortField === "isActive" ? "text-primary" : ""}`}
-          onClick={() => handleSort("isActive")}
-        >
-          Status <span className="text-[10px]">{sortField === "isActive" ? (sortDirection === "desc" ? "↓" : "↑") : "↕"}</span>
-        </button>
-        <button
-          className={`w-32 shrink-0 text-left cursor-pointer hover:text-foreground transition-colors ${sortField === "lastUpdatedAt" ? "text-primary" : ""}`}
-          onClick={() => handleSort("lastUpdatedAt")}
-        >
-          Last Updated <span className="text-[10px]">{sortField === "lastUpdatedAt" ? (sortDirection === "desc" ? "↓" : "↑") : "↕"}</span>
-        </button>
-        <div className="w-24 shrink-0" />
+        {/* Matches the desktop row layout: same gap-4, same column widths, card sm:p-5 offset */}
+        <div className="flex items-center gap-4 flex-1 px-4 sm:px-5">
+          <button
+            className={`w-14 shrink-0 text-center cursor-pointer hover:text-foreground transition-colors flex items-center justify-center gap-0.5 ${sortField === "riskScore" ? "text-primary font-semibold" : ""}`}
+            onClick={() => handleSort("riskScore")}
+          >
+            Score {sortField === "riskScore" ? (sortDirection === "desc" ? <ChevronDown className="h-3 w-3 text-primary" /> : <ChevronUp className="h-3 w-3 text-primary" />) : <ArrowUpDown className="h-3 w-3" />}
+          </button>
+          <button
+            className={`flex-1 min-w-0 text-left cursor-pointer hover:text-foreground transition-colors flex items-center gap-0.5 ${sortField === "normalizedUrl" ? "text-primary font-semibold" : ""}`}
+            onClick={() => handleSort("normalizedUrl")}
+          >
+            URL {sortField === "normalizedUrl" ? (sortDirection === "desc" ? <ChevronDown className="h-3 w-3 text-primary" /> : <ChevronUp className="h-3 w-3 text-primary" />) : <ArrowUpDown className="h-3 w-3" />}
+          </button>
+          <button
+            className={`w-20 shrink-0 text-left cursor-pointer hover:text-foreground transition-colors flex items-center gap-0.5 ${sortField === "isActive" ? "text-primary font-semibold" : ""}`}
+            onClick={() => handleSort("isActive")}
+          >
+            Status {sortField === "isActive" ? (sortDirection === "desc" ? <ChevronDown className="h-3 w-3 text-primary" /> : <ChevronUp className="h-3 w-3 text-primary" />) : <ArrowUpDown className="h-3 w-3" />}
+          </button>
+          <button
+            className={`w-32 shrink-0 text-left cursor-pointer hover:text-foreground transition-colors flex items-center gap-0.5 ${sortField === "lastUpdatedAt" ? "text-primary font-semibold" : ""}`}
+            onClick={() => handleSort("lastUpdatedAt")}
+          >
+            Last Updated {sortField === "lastUpdatedAt" ? (sortDirection === "desc" ? <ChevronDown className="h-3 w-3 text-primary" /> : <ChevronUp className="h-3 w-3 text-primary" />) : <ArrowUpDown className="h-3 w-3" />}
+          </button>
+          <div className="w-24 shrink-0" />
+          {/* Spacer matching ChevronRight in rows */}
+          <div className="w-4 shrink-0" />
         </div>
       </div>
 
@@ -544,10 +549,10 @@ export function ScanHistoryTable({ domains, selected, onSelectionChange, onDomai
           const summary = getScanSummary(domain);
 
           return (
-            <div key={domain.id} className="flex items-center gap-0">
+            <div key={domain.id} className="flex items-start sm:items-center gap-0">
               {/* Checkbox — outside the clickable card */}
               <div
-                className="shrink-0 w-10 flex items-center justify-center self-stretch cursor-pointer"
+                className="shrink-0 w-10 flex items-center justify-center self-stretch cursor-pointer pt-3 sm:pt-0"
                 onClick={() => {
                   const next = new Set(selected);
                   if (next.has(domain.id)) next.delete(domain.id);
@@ -576,14 +581,15 @@ export function ScanHistoryTable({ domains, selected, onSelectionChange, onDomai
                 }}
                 aria-label={`View scan report for ${domain.normalizedUrl}`}
               >
-              <div className="flex items-center gap-4">
+              {/* Desktop row layout */}
+              <div className="hidden sm:flex items-center gap-4">
                 {/* Score */}
                 <div className="w-14 shrink-0 flex justify-center">
                   {risk.overallScore !== null ? (
                     <ScoreRing
                       score={risk.overallScore}
                       size={42}
-                      strokeWidth={3.5}
+                      strokeWidth={4}
                     />
                   ) : scanning ? (
                     <div className="w-10 h-10 rounded-full bg-muted/50 flex items-center justify-center">
@@ -696,7 +702,7 @@ export function ScanHistoryTable({ domains, selected, onSelectionChange, onDomai
                   </span>
                 </div>
 
-                {/* Actions */}
+                {/* Actions — hover-reveal on desktop */}
                 <div className="flex items-center gap-1 w-24 shrink-0 justify-end" data-interactive>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -747,6 +753,100 @@ export function ScanHistoryTable({ domains, selected, onSelectionChange, onDomai
                     </TooltipTrigger>
                     <TooltipContent>Delete</TooltipContent>
                   </Tooltip>
+                </div>
+
+                {/* Chevron — hover-reveal navigability indicator */}
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/0 group-hover/card:text-muted-foreground/60 transition-all duration-150 group-hover/card:translate-x-0.5" aria-hidden="true" />
+              </div>
+
+              {/* Mobile stacked card layout */}
+              <div className="flex sm:hidden flex-col gap-2">
+                {/* First line: score ring + domain URL */}
+                <div className="flex items-center gap-3">
+                  <div className="shrink-0">
+                    {risk.overallScore !== null ? (
+                      <ScoreRing
+                        score={risk.overallScore}
+                        size={36}
+                        strokeWidth={3}
+                      />
+                    ) : scanning ? (
+                      <div className="w-9 h-9 rounded-full bg-muted/50 flex items-center justify-center">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" aria-hidden="true" />
+                      </div>
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-muted/50 flex items-center justify-center">
+                        <Globe className="h-3.5 w-3.5 text-muted-foreground/60" aria-hidden="true" />
+                      </div>
+                    )}
+                  </div>
+                  <a
+                    href={`https://${domain.normalizedUrl}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-semibold text-foreground hover:text-primary hover:underline truncate transition-colors duration-150 flex-1 min-w-0"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {domain.normalizedUrl}
+                  </a>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/40" aria-hidden="true" />
+                </div>
+                {/* Second line: status badge + relative time + actions */}
+                <div className="flex items-center gap-2 pl-12">
+                  <div className="shrink-0">
+                    {scanning && isStalled(domain) ? (
+                      <Badge variant="danger-subtle" className="gap-1 border-0 text-[11px]">
+                        <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                        Stalled
+                      </Badge>
+                    ) : scanning ? (
+                      <Badge variant="info-subtle" className="gap-1 border-0 text-[11px]">
+                        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                        Scanning
+                      </Badge>
+                    ) : effectiveStatus === "failed" ? (
+                      <Badge variant="danger-subtle" className="border-0 text-[11px]">Failed</Badge>
+                    ) : (
+                      <Badge
+                        variant={domain.isActive ? "success-subtle" : "danger-subtle"}
+                        className="border-0 text-[11px]"
+                      >
+                        {domain.isActive ? "Active" : "Inactive"}
+                      </Badge>
+                    )}
+                  </div>
+                  <span className="text-[11px] text-muted-foreground">
+                    {(domain.scans?.[0]?.updatedAt || domain.lastCheckedAt)
+                      ? formatDistanceToNow(new Date((domain.scans?.[0]?.updatedAt || domain.lastCheckedAt)!), { addSuffix: true })
+                      : "Never scanned"}
+                  </span>
+                  {/* Actions — always visible on mobile */}
+                  <div className="flex items-center gap-0 ml-auto" data-interactive>
+                    <button
+                      onClick={(e) => handleRescan(e, domain.id)}
+                      disabled={rescanning === domain.id}
+                      aria-label={`Rescan ${domain.normalizedUrl}`}
+                      className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors duration-150 disabled:opacity-50"
+                    >
+                      {rescanning === domain.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+                      )}
+                    </button>
+                    <button
+                      onClick={(e) => handleDelete(e, domain.id)}
+                      disabled={deleting === domain.id}
+                      aria-label={`Delete ${domain.normalizedUrl}`}
+                      className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors duration-150 disabled:opacity-50"
+                    >
+                      {deleting === domain.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
               </div>

@@ -13,7 +13,7 @@ import {
   Globe,
   ChevronRight,
 } from "lucide-react";
-import { cleanUrl, getScoreTextColor } from "@/lib/utils";
+import { cleanUrl, getScoreTextColor, getScoreBgColorSubtle } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 
 interface RecentScan {
@@ -103,11 +103,11 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
     <div className="flex flex-col items-center justify-start pt-52 sm:pt-60 px-4 sm:px-6">
       <div className="w-full max-w-xl mx-auto space-y-6">
         {/* Heading */}
-        <div className="text-center space-y-1">
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+        <div className="text-center space-y-2">
+          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-foreground">
             Domain Scanner
           </h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm sm:text-base text-muted-foreground/80 leading-relaxed">
             Scan any domain for risk signals and compliance gaps
           </p>
         </div>
@@ -144,7 +144,7 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
             <Button
               type="submit"
               disabled={isLoading}
-              className="h-9 px-4 rounded-full text-sm font-semibold"
+              className="h-9 px-4 rounded-full text-sm font-semibold shadow-sm hover:shadow-md active:shadow-none active:scale-[0.97] hover:brightness-110 transition-all duration-150"
             >
               {isLoading ? (
                 <>
@@ -175,7 +175,7 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
 
         {/* Recent scans */}
         {recentScans.length > 0 && (
-          <div className="space-y-2 pt-10">
+          <div className="space-y-2 pt-6 border-t border-border/50">
             <div className="flex items-center justify-between">
               <h2 className="text-label">Recent Scans</h2>
               <Button
@@ -193,10 +193,10 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
                 <button
                   key={scan.id}
                   onClick={() => router.push(`/scans/${scan.id}`)}
-                  className="recent-scan-item w-full text-left px-4 py-2.5"
+                  className="recent-scan-item group w-full text-left px-4 py-2.5 hover:pl-5 transition-all duration-150"
                 >
                   {/* Score indicator */}
-                  <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-muted/50 shrink-0">
+                  <div className={`flex items-center justify-center w-9 h-9 rounded-lg shrink-0 ${scan.riskScore !== null ? getScoreBgColorSubtle(scan.riskScore) : "bg-muted/50"}`}>
                     {scan.riskScore !== null ? (
                       <span className={`text-sm font-bold tabular-nums ${getScoreTextColor(scan.riskScore)}`}>
                         {scan.riskScore}
@@ -224,7 +224,7 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
                     {scan.isActive ? "Active" : "Inactive"}
                   </Badge>
 
-                  <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0" aria-hidden="true" />
+                  <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0 group-hover:translate-x-0.5 transition-all duration-150" aria-hidden="true" />
                 </button>
               ))}
             </div>
