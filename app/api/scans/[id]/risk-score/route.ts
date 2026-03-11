@@ -1,24 +1,9 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { runRiskIntelPipeline } from "@/lib/domainIntel";
+import { resolveDomainAndScan } from "@/lib/domainUtils";
+import { DataPointKey } from "@/lib/constants";
+import { safeJsonParse } from "@/lib/utils";
 
-/**
- * POST /api/scans/{id}/risk-score
- *
- * Run the domain risk intelligence pipeline for an existing scan.
- * This endpoint will:
- * 1. Collect domain intelligence signals (HTTP, DNS, TLS, etc.)
- * 2. Compute risk scores (phishing, shell_company, compliance)
- * 3. Persist results to ScanDataPoint, DomainDataPoint, SignalLog, and CrawlFetchLog
- *
- * Request body (optional):
- * - force: boolean - Re-run even if assessment already exists
- *
- * Returns:
- * - assessment: The risk assessment result
- * - signals: Summary of collected signals
- * - error: Any error message (null if successful)
- */
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -26,107 +11,58 @@ export async function POST(
   try {
     const { id } = await params;
 
-    // The ID could be either a domain ID (hash) or a scan ID
-    // First try to find as domain ID
-    let domain = await prisma.domain.findUnique({
-      where: { id },
-      include: {
-        scans: {
-          orderBy: { createdAt: "desc" },
-          take: 1,
-        },
-        dataPoints: {
-          where: { key: "domain_risk_assessment" },
-        },
-      },
+    const result = await resolveDomainAndScan(id, {
+      includeDataPoints: true,
+      dataPointKeys: [DataPointKey.RISK_ASSESSMENT],
     });
 
-    // If not found as domain, try to find the scan and get its domain
-    if (!domain) {
-      const existingScan = await prisma.websiteScan.findUnique({
-        where: { id },
-        include: { domain: true },
-      });
-
-      if (!existingScan) {
-        return NextResponse.json(
-          { error: "Domain or scan not found" },
-          { status: 404 }
-        );
-      }
-
-      domain = await prisma.domain.findUnique({
-        where: { id: existingScan.domainId },
-        include: {
-          scans: {
-            orderBy: { createdAt: "desc" },
-            take: 1,
-          },
-          dataPoints: {
-            where: { key: "domain_risk_assessment" },
-          },
-        },
-      });
+    if (!result) {
+      return NextResponse.json({ error: "Domain or scan not found" }, { status: 404 });
     }
 
-    if (!domain) {
-      return NextResponse.json({ error: "Domain not found" }, { status: 404 });
-    }
-
-    const latestScan = domain.scans[0];
+    const { domain, latestScan, scanUrl } = result;
     if (!latestScan) {
-      return NextResponse.json(
-        { error: "No scans found for this domain" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "No scans found for this domain" }, { status: 404 });
     }
 
-    // Check if we should force re-run
     const body = await request.json().catch(() => ({}));
     const force = body.force === true;
 
-    // Check if risk assessment already exists for this domain
-    const existingAssessment = domain.dataPoints.find(
-      (dp) => dp.key === "domain_risk_assessment"
+    const existingAssessment = (domain as any).dataPoints?.find(
+      (dp: any) => dp.key === DataPointKey.RISK_ASSESSMENT
     );
 
     if (existingAssessment && !force) {
-      const assessmentValue = JSON.parse(existingAssessment.value);
       return NextResponse.json({
         message: "Risk assessment already exists for this domain",
         skipped: true,
         domainId: domain.id,
         scanId: latestScan.id,
-        assessment: assessmentValue,
+        assessment: safeJsonParse(existingAssessment.value, {}),
       });
     }
 
-    // Use the scan URL or construct from normalized domain
-    const scanUrl = latestScan.url || `https://${domain.normalizedUrl}`;
-
-    // Run the risk intelligence pipeline
     console.log(`Running risk intelligence pipeline for ${domain.normalizedUrl}...`);
-
-    const result = await runRiskIntelPipeline(latestScan.id, scanUrl);
+    const pipelineResult = await runRiskIntelPipeline(latestScan.id, scanUrl);
 
     console.log(
       `Risk intelligence completed for ${domain.normalizedUrl}: ` +
-      `overall_score=${result.assessment.overall_risk_score}, ` +
-      `primary_risk=${result.assessment.primary_risk_type}, ` +
-      `confidence=${result.assessment.confidence}`
+      `overall_score=${pipelineResult.assessment.overall_risk_score}, ` +
+      `primary_risk=${pipelineResult.assessment.primary_risk_type}, ` +
+      `confidence=${pipelineResult.assessment.confidence}`
     );
 
     return NextResponse.json({
       success: true,
       domainId: domain.id,
       scanId: latestScan.id,
-      assessment: result.assessment,
-      signalsSummary: result.signals ? {
-        collected_at: result.signals.signals.collected_at,
-        urls_checked_count: result.signals.urls_checked.length,
-        errors_count: result.signals.errors.length,
+      assessment: pipelineResult.assessment,
+      signalsSummary: pipelineResult.signals ? {
+        collected_at: pipelineResult.signals.signals.collected_at,
+        urls_checked_count: pipelineResult.signals.urls_checked.length,
+        errors_count: pipelineResult.signals.errors.length,
       } : null,
-      error: result.error,
+      error: pipelineResult.error,
     });
   } catch (error) {
     console.error("Error running risk intelligence pipeline:", error);
@@ -138,115 +74,39 @@ export async function POST(
   }
 }
 
-/**
- * GET /api/scans/{id}/risk-score
- *
- * Get the existing risk assessment for a domain/scan without re-running.
- */
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
+    const riskKeys = [DataPointKey.RISK_ASSESSMENT, DataPointKey.DOMAIN_INTEL_SIGNALS];
 
-    // The ID could be either a domain ID (hash) or a scan ID
-    let domain = await prisma.domain.findUnique({
-      where: { id },
-      include: {
-        dataPoints: {
-          where: {
-            key: { in: ["domain_risk_assessment", "domain_intel_signals"] }
-          },
-        },
-        scans: {
-          orderBy: { createdAt: "desc" },
-          take: 1,
-          include: {
-            dataPoints: {
-              where: {
-                key: { in: ["domain_risk_assessment", "domain_intel_signals"] }
-              },
-            },
-          },
-        },
-      },
+    const result = await resolveDomainAndScan(id, {
+      includeDataPoints: true,
+      dataPointKeys: riskKeys,
     });
 
-    // If not found as domain, try to find the scan
-    if (!domain) {
-      const scan = await prisma.websiteScan.findUnique({
-        where: { id },
-        include: {
-          domain: {
-            include: {
-              dataPoints: {
-                where: {
-                  key: { in: ["domain_risk_assessment", "domain_intel_signals"] }
-                },
-              },
-            },
-          },
-          dataPoints: {
-            where: {
-              key: { in: ["domain_risk_assessment", "domain_intel_signals"] }
-            },
-          },
-        },
-      });
-
-      if (!scan) {
-        return NextResponse.json(
-          { error: "Domain or scan not found" },
-          { status: 404 }
-        );
-      }
-
-      // Build response from scan
-      const assessmentDataPoint = scan.dataPoints.find(
-        dp => dp.key === "domain_risk_assessment"
-      );
-      const signalsDataPoint = scan.dataPoints.find(
-        dp => dp.key === "domain_intel_signals"
-      );
-
-      if (!assessmentDataPoint) {
-        return NextResponse.json(
-          { error: "No risk assessment found for this scan" },
-          { status: 404 }
-        );
-      }
-
-      return NextResponse.json({
-        domainId: scan.domainId,
-        scanId: scan.id,
-        assessment: JSON.parse(assessmentDataPoint.value),
-        signals: signalsDataPoint ? JSON.parse(signalsDataPoint.value) : null,
-        extractedAt: assessmentDataPoint.extractedAt,
-      });
+    if (!result) {
+      return NextResponse.json({ error: "Domain or scan not found" }, { status: 404 });
     }
 
-    // Get from domain data points
-    const assessmentDataPoint = domain.dataPoints.find(
-      dp => dp.key === "domain_risk_assessment"
-    );
-    const signalsDataPoint = domain.dataPoints.find(
-      dp => dp.key === "domain_intel_signals"
-    );
+    const { domain, latestScan } = result;
+    const dataPoints = (domain as any).dataPoints ?? [];
 
-    if (!assessmentDataPoint) {
-      return NextResponse.json(
-        { error: "No risk assessment found for this domain" },
-        { status: 404 }
-      );
+    const assessmentDp = dataPoints.find((dp: any) => dp.key === DataPointKey.RISK_ASSESSMENT);
+    const signalsDp = dataPoints.find((dp: any) => dp.key === DataPointKey.DOMAIN_INTEL_SIGNALS);
+
+    if (!assessmentDp) {
+      return NextResponse.json({ error: "No risk assessment found" }, { status: 404 });
     }
 
     return NextResponse.json({
       domainId: domain.id,
-      scanId: domain.scans[0]?.id || null,
-      assessment: JSON.parse(assessmentDataPoint.value),
-      signals: signalsDataPoint ? JSON.parse(signalsDataPoint.value) : null,
-      extractedAt: assessmentDataPoint.extractedAt,
+      scanId: latestScan?.id || null,
+      assessment: safeJsonParse(assessmentDp.value, {}),
+      signals: signalsDp ? safeJsonParse(signalsDp.value, null) : null,
+      extractedAt: assessmentDp.extractedAt,
     });
   } catch (error) {
     console.error("Error fetching risk assessment:", error);

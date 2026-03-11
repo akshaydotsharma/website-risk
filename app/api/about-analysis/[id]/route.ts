@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { safeJsonParse } from "@/lib/utils";
 
 export async function GET(
   _request: Request,
@@ -24,12 +25,12 @@ export async function GET(
     return NextResponse.json({
       id: run.id,
       status: run.status,
-      domainIds: JSON.parse(run.domainIds),
+      domainIds: safeJsonParse(run.domainIds, []),
       domainCount: run.domainCount,
       pairCount: run.pairCount,
       clusterCount: run.clusterCount,
       flaggedCount: run.flaggedCount,
-      summary: run.summary ? JSON.parse(run.summary) : null,
+      summary: safeJsonParse(run.summary, null),
       error: run.error,
       createdAt: run.createdAt.toISOString(),
       completedAt: run.completedAt?.toISOString() || null,
@@ -40,16 +41,14 @@ export async function GET(
         domainAUrl: p.domainAUrl,
         domainBUrl: p.domainBUrl,
         textScore: p.textScore,
-        sharedSentences: p.sharedSentences
-          ? JSON.parse(p.sharedSentences)
-          : [],
+        sharedSentences: safeJsonParse(p.sharedSentences, []),
         sharedSentenceCount: p.sharedSentenceCount,
-        keywordHitsA: p.keywordHitsA ? JSON.parse(p.keywordHitsA) : [],
-        keywordHitsB: p.keywordHitsB ? JSON.parse(p.keywordHitsB) : [],
+        keywordHitsA: safeJsonParse(p.keywordHitsA, []),
+        keywordHitsB: safeJsonParse(p.keywordHitsB, []),
         clusterId: p.clusterId,
         flagged: p.flagged,
-        flagReasons: p.flagReasons ? JSON.parse(p.flagReasons) : [],
-        pageScores: p.pageScores ? JSON.parse(p.pageScores) : [],
+        flagReasons: safeJsonParse(p.flagReasons, []),
+        pageScores: safeJsonParse(p.pageScores, []),
       })),
     });
   } catch (error) {

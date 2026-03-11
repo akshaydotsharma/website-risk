@@ -28,6 +28,8 @@ import {
   Info,
 } from "lucide-react";
 import { getScoreTextColor, getScoreBgColorSubtle } from "@/lib/utils";
+import { PAGE_TEXT_KEYS, PAGE_TEXT_LABELS, DataPointKey } from "@/lib/constants";
+import { ScoreBadge, StatLabel, scoreToColor, blendedScore } from "@/components/similarity/shared-primitives";
 import {
   VW,
   VH,
@@ -122,32 +124,7 @@ const TAB_DEFS = [
  * Raw TF-IDF undersells similarity when domains share many sentences,
  * so we boost by shared sentence count (same formula used for clustering).
  */
-function blendedScore(textScore: number, sharedSentenceCount: number): number {
-  const SENTENCE_BONUS = 2;
-  const MAX_BONUS = 10;
-  const bonus = Math.min(sharedSentenceCount * SENTENCE_BONUS, MAX_BONUS);
-  return Math.min(100, textScore + bonus);
-}
-
-/** Stat card label with a visible info icon and tooltip on hover. */
-function StatLabel({ label, tooltip, icon }: { label: string; tooltip: string; icon?: React.ReactNode }) {
-  return (
-    <div className="stat-card-label">
-      {icon}
-      {label}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button type="button" className="ml-1 inline-flex items-center">
-            <Info className="h-3 w-3 text-muted-foreground/50 hover:text-muted-foreground transition-colors" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-[240px] text-xs leading-relaxed font-normal normal-case tracking-normal">
-          {tooltip}
-        </TooltipContent>
-      </Tooltip>
-    </div>
-  );
-}
+// blendedScore, StatLabel imported from shared-primitives
 
 /** Icon link with styled tooltip on hover. */
 function IconLink({
@@ -184,15 +161,7 @@ function IconLink({
   );
 }
 
-function ScoreBadge({ score }: { score: number }) {
-  return (
-    <span
-      className={`text-sm font-bold tabular-nums px-2 py-0.5 rounded-md ${getScoreBgColorSubtle(score)} ${getScoreTextColor(score)}`}
-    >
-      {score}
-    </span>
-  );
-}
+// ScoreBadge imported from shared-primitives
 
 /** Compact row for a flagged domain in the Uniqueness Check summary. */
 function FlaggedDomainRow({ match }: { match: { url: string; matchCount: number } }) {
@@ -280,19 +249,8 @@ function SummarySharedSentencesExpander({
 // Page Type Matches Summary (used in Summary tab)
 // =============================================================================
 
-const PAGE_TYPE_ORDER = [
-  "homepage_text", "about_page", "contact_page",
-  "privacy_page", "refund_page", "terms_page",
-];
-
-const PAGE_TYPE_LABELS: Record<string, string> = {
-  homepage_text: "Homepage",
-  about_page: "About Us",
-  contact_page: "Contact Us",
-  privacy_page: "Privacy Policy",
-  refund_page: "Refund Policy",
-  terms_page: "Terms of Service",
-};
+const PAGE_TYPE_ORDER = [...PAGE_TEXT_KEYS];
+const PAGE_TYPE_LABELS = PAGE_TEXT_LABELS;
 
 function PageTypeMatchesSummary({ pairs }: { pairs: PairData[] }) {
   // Count pairs with matches per page type
@@ -629,12 +587,7 @@ function computeMemberStats(
   });
 }
 
-function scoreToColor(score: number): string {
-  if (score >= 85) return "hsl(0, 72%, 51%)";
-  if (score >= 70) return "hsl(25, 95%, 53%)";
-  if (score >= 40) return "hsl(45, 93%, 47%)";
-  return "hsl(142, 71%, 45%)";
-}
+// scoreToColor imported from shared-primitives
 
 function GraphNodeCard({ node, isSelected = false }: { node: { domainId: string; url: string; avgScore: number; totalShared: number }; isSelected?: boolean }) {
   const aboutUrl = useAboutPageUrl(node.url);
@@ -1257,63 +1210,7 @@ function findDuplicatedSentences(domains: DomainAboutText[]): DuplicatedSentence
     }));
 }
 
-/** Fingerprint a sentence for comparison (lowercase, strip punctuation, collapse spaces). */
-function fingerprint(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** Common English stopwords — excluded from keyword highlighting. */
-const STOPWORDS = new Set([
-  "a","about","above","after","again","all","am","an","and","any","are","as","at",
-  "be","been","before","being","below","between","both","but","by","can","could",
-  "did","do","does","doing","down","during","each","few","for","from","get","got",
-  "had","has","have","having","he","her","here","hers","herself","him","himself",
-  "his","how","i","if","in","into","is","it","its","itself","just","me","might",
-  "more","most","my","myself","no","nor","not","now","of","off","on","once","only",
-  "or","other","our","ours","ourselves","out","over","own","re","s","same","shall",
-  "she","should","so","some","such","t","than","that","the","their","theirs","them",
-  "themselves","then","there","these","they","this","those","through","to","too",
-  "under","until","up","us","very","was","we","were","what","when","where","which",
-  "while","who","whom","why","will","with","would","you","your","yours","yourself",
-  "yourselves","also","may","must","one","two","new","used","use","using","make",
-  "made","like","well","way","many","back","even","give","day","still","take",
-  "come","say","see","go","part","know","let","including","without","within",
-  "however","whether","please","otherwise",
-]);
-
-/**
- * Extract shared meaningful keywords between two texts.
- * Returns a set of lowercase words that appear in both texts (excluding stopwords
- * and short words). Only returns words that appear at least twice total.
- */
-function getSharedKeywords(textA: string, textB: string): Set<string> {
-  const tokenize = (text: string) => {
-    const words = new Map<string, number>();
-    for (const match of text.toLowerCase().matchAll(/[a-z]{3,}/g)) {
-      const w = match[0];
-      if (!STOPWORDS.has(w)) {
-        words.set(w, (words.get(w) || 0) + 1);
-      }
-    }
-    return words;
-  };
-
-  const wordsA = tokenize(textA);
-  const wordsB = tokenize(textB);
-  const shared = new Set<string>();
-
-  for (const [word] of wordsA) {
-    if (wordsB.has(word)) {
-      shared.add(word);
-    }
-  }
-
-  return shared;
-}
+import { fingerprint, getSharedKeywords } from "@/lib/textAnalysisUtils";
 
 /** Clean raw about text: unescape \\n literals, strip heading repetition, collapse noise. */
 function cleanAboutText(raw: string): string {
@@ -1905,7 +1802,7 @@ function SideBySidePairCard({
   defaultExpanded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
-  const [activePageType, setActivePageType] = useState("about_page");
+  const [activePageType, setActivePageType] = useState<string>(DataPointKey.ABOUT_PAGE);
 
   const domA = domainMap.get(pair.domainAUrl);
   const domB = domainMap.get(pair.domainBUrl);
@@ -1913,7 +1810,7 @@ function SideBySidePairCard({
   // Get text for the active page type
   const getPageText = (dom: DomainAboutText | undefined, pageKey: string) => {
     if (!dom) return "";
-    if (pageKey === "about_page") return dom.aboutText || "";
+    if (pageKey === DataPointKey.ABOUT_PAGE) return dom.aboutText || "";
     const pt = dom.pageTexts?.find((p) => p.key === pageKey);
     return pt?.text || "";
   };
@@ -1930,9 +1827,9 @@ function SideBySidePairCard({
     };
     const keysA = new Set(domA.pageTexts.map((p) => p.key));
     // Always include about_page if aboutText exists
-    if (domA.aboutText) keysA.add("about_page");
+    if (domA.aboutText) keysA.add(DataPointKey.ABOUT_PAGE);
     const keysB = new Set(domB.pageTexts.map((p) => p.key));
-    if (domB.aboutText) keysB.add("about_page");
+    if (domB.aboutText) keysB.add(DataPointKey.ABOUT_PAGE);
     const common = Array.from(keysA).filter((k) => keysB.has(k));
     return common.map((k) => ({
       key: k,

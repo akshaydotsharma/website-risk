@@ -5,6 +5,7 @@ import {
   extractReadableText,
 } from "@/lib/extractHomepageArtifact";
 import type { AboutPageData } from "@/lib/extractors";
+import { DataPointKey } from "@/lib/constants";
 
 export async function POST(
   _request: NextRequest,
@@ -20,7 +21,7 @@ export async function POST(
         id: true,
         normalizedUrl: true,
         dataPoints: {
-          where: { key: { in: ["contact_details", "about_page"] } },
+          where: { key: { in: [DataPointKey.CONTACT_DETAILS, DataPointKey.ABOUT_PAGE] } },
           select: { key: true, value: true },
         },
       },
@@ -33,7 +34,7 @@ export async function POST(
     // Get about page URL from contact_details or existing about_page data point
     let aboutPageUrl: string | null = null;
 
-    const contactDp = domain.dataPoints.find((dp) => dp.key === "contact_details");
+    const contactDp = domain.dataPoints.find((dp) => dp.key === DataPointKey.CONTACT_DETAILS);
     if (contactDp) {
       try {
         const contactData = JSON.parse(contactDp.value);
@@ -44,7 +45,7 @@ export async function POST(
     }
 
     if (!aboutPageUrl) {
-      const aboutDp = domain.dataPoints.find((dp) => dp.key === "about_page");
+      const aboutDp = domain.dataPoints.find((dp) => dp.key === DataPointKey.ABOUT_PAGE);
       if (aboutDp) {
         try {
           const aboutData = JSON.parse(aboutDp.value);
@@ -86,10 +87,10 @@ export async function POST(
 
     // Update the about_page DomainDataPoint
     await prisma.domainDataPoint.upsert({
-      where: { domainId_key: { domainId, key: "about_page" } },
+      where: { domainId_key: { domainId, key: DataPointKey.ABOUT_PAGE } },
       create: {
         domainId,
-        key: "about_page",
+        key: DataPointKey.ABOUT_PAGE,
         label: "About page",
         value: JSON.stringify(aboutPageResult),
         sources: JSON.stringify([aboutPageUrl]),

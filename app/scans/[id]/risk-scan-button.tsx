@@ -1,9 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { RotateCw, Loader2 } from "lucide-react";
+import { AsyncActionButton } from "@/components/async-action-button";
 
 interface RiskScanButtonProps {
   domainId: string;
@@ -11,54 +8,12 @@ interface RiskScanButtonProps {
 }
 
 export function RiskScanButton({ domainId, hasExistingRiskScore }: RiskScanButtonProps) {
-  const [isScanning, setIsScanning] = useState(false);
-  const router = useRouter();
-
-  const handleRiskScan = async () => {
-    setIsScanning(true);
-
-    try {
-      const response = await fetch(`/api/scans/${domainId}/risk-score`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: hasExistingRiskScore }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || data.details || "Failed to run risk scan");
-      }
-
-      // Refresh the page to show updated data
-      router.refresh();
-    } catch (error) {
-      console.error("Risk scan error:", error);
-      const message = error instanceof Error ? error.message : "Failed to run risk scan";
-      alert(`Risk Scan failed: ${message}`);
-    } finally {
-      setIsScanning(false);
-    }
-  };
-
   return (
-    <Button
-      onClick={handleRiskScan}
-      disabled={isScanning}
-      variant="outline"
-      size="sm"
-    >
-      {isScanning ? (
-        <>
-          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          Rescanning…
-        </>
-      ) : (
-        <>
-          <RotateCw className="mr-2 h-4 w-4" />
-          Rescan
-        </>
-      )}
-    </Button>
+    <AsyncActionButton
+      endpoint={`/api/scans/${domainId}/risk-score`}
+      body={{ force: hasExistingRiskScore }}
+      label="Rescan"
+      loadingLabel="Rescanning…"
+    />
   );
 }

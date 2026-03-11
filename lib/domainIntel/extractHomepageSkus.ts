@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio';
 import type { Element, AnyNode } from 'domhandler';
 import { z } from 'zod';
 import { prisma } from '../prisma';
+import { sslTolerantDispatcher } from '../ssl-fetch';
 import { fetchWithBrowser } from '../browser';
 import type { DomainPolicy } from './schemas';
 
@@ -785,6 +786,178 @@ function extractImage($: cheerio.CheerioAPI, $card: cheerio.Cheerio<AnyNode>, ba
 }
 
 // =============================================================================
+// SPA Card Fallback Extraction
+// =============================================================================
+
+// Price pattern for matching currency amounts in text
+const PRICE_REGEX = /(?:[$€£¥₹₩₽₺₴]|(?:USD|EUR|GBP|BRL|R\$|AUD|CAD|NZD|SGD|HKD|TWD|KRW|JPY|INR|MXN|COP|CLP|ARS|PEN|PHP|THB|MYR|IDR|VND|ZAR|NGN|KES|GHS|TZS|UGX|MAD|EGP|SAR|AED|QAR|KWD|BHD|OMR|PKR|BDT|LKR|MMK|LAK|KHR|DKK|SEK|NOK|CHF|PLN|CZK|HUF|RON|BGN|HRK|RSD|TRY|UAH|ILS|RUB|CNY|TWD|KZT))\s*\d[\d.,]*|\d[\d.,]*\s*(?:[$€£¥₹₩₽₺₴]|(?:USD|EUR|GBP|BRL|AUD|CAD))/i;
+
+/**
+ * Fallback extraction for SPAs that use <div>/<span> product cards without <a> tags.
+ * Looks for repeating container patterns with title + price content.
+ */
+function extractFromSpaCards($: cheerio.CheerioAPI, homepageUrl: string): HomepageSkuItem[] {
+  const items: HomepageSkuItem[] = [];
+  const seenTitles = new Set<string>();
+
+  // Strategy: Find elements that contain a price. Group by parent container.
+  // A product card = a container that has both a short title text and a price.
+
+  // Look for common product card class patterns
+  const cardSelectors = [
+    '[class*="product"]',
+    '[class*="goods"]',
+    '[class*="item"]:not(nav *):not(header *):not(footer *)',
+    '[class*="card"]:not(nav *):not(header *):not(footer *)',
+    '[class*="sku"]',
+    '[class*="catalog"]',
+  ];
+
+  let cardElements: cheerio.Cheerio<AnyNode> | null = null;
+  let usedSelector = '';
+
+  for (const selector of cardSelectors) {
+    const candidates = $(selector);
+    if (candidates.length >= 2) {
+      // Check if these have price-like content
+      let withPrice = 0;
+      candidates.each((_, el) => {
+        const text = $(el).text();
+        if (PRICE_REGEX.test(text)) withPrice++;
+      });
+      // At least 50% should have prices
+      if (withPrice >= candidates.length * 0.4) {
+        cardElements = candidates;
+        usedSelector = selector;
+        break;
+      }
+    }
+  }
+
+  if (!cardElements || cardElements.length === 0) {
+    // Last resort: find repeating sibling elements that contain prices
+    const priceEls = $('*').filter((_, el) => {
+      const text = $(el).text().trim();
+      return text.length < 20 && PRICE_REGEX.test(text);
+    });
+
+    if (priceEls.length >= 3) {
+      // Get the common parent pattern
+      const parents = new Map<string, { count: number; el: Element }>();
+      priceEls.each((_, el) => {
+        const parent = $(el).parent();
+        const grandparent = parent.parent();
+        // Use grandparent as the card container
+        const gp = grandparent.get(0);
+        if (gp) {
+          const key = `${gp.tagName}.${(gp.attribs?.class || '').split(' ')[0]}`;
+          const existing = parents.get(key);
+          if (existing) {
+            existing.count++;
+          } else {
+            parents.set(key, { count: 1, el: gp });
+          }
+        }
+      });
+
+      // Find the most common parent pattern
+      let bestKey = '';
+      let bestCount = 0;
+      for (const [key, val] of parents) {
+        if (val.count > bestCount) {
+          bestCount = val.count;
+          bestKey = key;
+        }
+      }
+
+      if (bestCount >= 3 && bestKey) {
+        const [tag, cls] = bestKey.split('.');
+        const selector = cls ? `${tag}.${cls}` : tag;
+        cardElements = $(selector);
+        usedSelector = selector;
+      }
+    }
+  }
+
+  if (!cardElements || cardElements.length === 0) return items;
+
+  console.log(`SKU SPA fallback: Found ${cardElements.length} card elements via '${usedSelector}'`);
+
+  cardElements.each((_, element) => {
+    if (items.length >= MAX_SKUS_PER_SCAN) return false;
+
+    const $card = $(element);
+
+    // Skip if in nav/header/footer
+    if ($card.parents('nav, header, footer, [class*="footer"], [class*="header"], [class*="nav"]').length > 0) return;
+
+    // Extract title: look for short text in heading-like or title-like elements
+    let title: string | null = null;
+    const titleSelectors = [
+      '[class*="title"]', '[class*="name"]', '[class*="heading"]',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    ];
+    for (const sel of titleSelectors) {
+      const titleEl = $card.find(sel).first();
+      const text = titleEl.text().trim();
+      if (text && text.length > 2 && text.length < MAX_TITLE_LENGTH) {
+        title = text;
+        break;
+      }
+    }
+
+    // Extract price
+    const priceInfo = extractPrice($, $card);
+
+    // Must have at least title or price to be a product
+    if (!title && !priceInfo) return;
+
+    // Skip duplicates by title
+    const titleKey = (title || '').toLowerCase().trim();
+    if (titleKey && seenTitles.has(titleKey)) return;
+    if (titleKey) seenTitles.add(titleKey);
+
+    // Extract image
+    const imageUrl = extractImage($, $card, homepageUrl);
+
+    // Generate a unique product URL for SPA cards (no real product URL available)
+    // Use title slug or index to differentiate
+    const titleSlug = (title || `product-${items.length + 1}`)
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 80);
+    const spaProductUrl = `${homepageUrl}#/product/${titleSlug}`;
+
+    const item: HomepageSkuItem = {
+      sourceUrl: homepageUrl,
+      productUrl: spaProductUrl,
+      productPath: `/product/${titleSlug}`,
+      title,
+      priceText: priceInfo?.priceText || null,
+      currency: priceInfo?.currency || null,
+      amount: priceInfo?.amount || null,
+      originalPriceText: priceInfo?.originalPriceText || null,
+      originalAmount: priceInfo?.originalAmount || null,
+      isOnSale: priceInfo?.isOnSale || false,
+      imageUrl,
+      extractionMethod: 'spa_card_fallback',
+      confidence: 0,
+    };
+
+    // Confidence: lower baseline since no product URL, but title+price is strong
+    let confidence = 30; // Base for SPA card
+    if (title) confidence += 20;
+    if (priceInfo) confidence += 25;
+    if (imageUrl) confidence += 15;
+    if (title && priceInfo) confidence += 10; // Both = strong product signal
+    item.confidence = Math.min(confidence, 100);
+
+    items.push(item);
+  });
+
+  console.log(`SKU SPA fallback: Extracted ${items.length} products from card elements`);
+  return items;
+}
+
+// =============================================================================
 // Main Extraction Function
 // =============================================================================
 
@@ -941,6 +1114,18 @@ export async function extractHomepageSkus(
       items.push(item);
     });
 
+    // Fallback: If no anchor-based products found, try extracting from product card containers
+    // This handles SPAs (Vue, React) where products are <div> elements with click handlers,
+    // or sites where all anchor tags are in nav/footer regions
+    if (items.length === 0) {
+      console.log(`SKU extraction: No products from anchors (total=${totalAnchors}, nav=${skippedNav}, excluded=${skippedExcluded}), trying SPA card fallback on ${homepageUrl}`);
+      const spaItems = extractFromSpaCards($, homepageUrl);
+      items.push(...spaItems);
+      if (spaItems.length > 0) {
+        notes.push(`SPA fallback: extracted ${spaItems.length} products from card elements`);
+      }
+    }
+
     // Sort by confidence descending
     items.sort((a, b) => b.confidence - a.confidence);
 
@@ -1090,6 +1275,8 @@ export async function runHomepageSkuExtraction(
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.5',
         },
+        // @ts-expect-error -- Node 20+ supports undici dispatcher
+        dispatcher: sslTolerantDispatcher,
       });
 
       clearTimeout(timeoutId);
@@ -1131,20 +1318,48 @@ export async function runHomepageSkuExtraction(
             homepageHtml.includes('challenge-platform') ||
             (homepageHtml.includes('Enable JavaScript') && homepageHtml.length < 10000);
 
-          if (isCloudflareChallenge) {
-            console.log(`Detected Cloudflare/bot protection challenge for ${sourceUrl}, falling back to browser-based fetch...`);
+          // Detect SPA shells: tiny HTML with no real text content (just JS bootstrapper)
+          const textOnly = homepageHtml
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const isSpaShell = homepageHtml.length < 3000 && textOnly.length < 100;
+
+          if (isCloudflareChallenge || isSpaShell) {
+            console.log(isSpaShell
+              ? `Detected SPA shell (${homepageHtml.length} bytes, ${textOnly.length} chars text) for ${sourceUrl}, falling back to browser...`
+              : `Detected Cloudflare/bot protection challenge for ${sourceUrl}, falling back to browser-based fetch...`);
             homepageHtml = null; // Reset to trigger browser fetch below
           } else {
             // Check if this is a JavaScript-rendered page with few/no product links
-            // Shoplazza, some Shopify themes, and other JS-heavy platforms may return
-            // valid HTML but render products via JavaScript
+            // Many e-commerce platforms render products via JavaScript — Shoplazza, Shopify,
+            // Vue/React/Angular SPAs, BeiKe, and custom platforms. Detect by checking for
+            // JS framework markers + e-commerce signals but few actual product links in HTML.
             const productLinkCount = (homepageHtml.match(/\/products?\//gi) || []).length;
             const hasShoplazzaMarker = homepageHtml.includes('shoplazza') || homepageHtml.includes('window.__shoplazza');
             const hasShopifyMarker = homepageHtml.includes('cdn.shopify.com') || homepageHtml.includes('Shopify.theme');
-            const isJsRenderedSite = hasShoplazzaMarker || hasShopifyMarker;
+            const hasVueMarker = homepageHtml.includes('data-v-') || homepageHtml.includes('__vue__') || homepageHtml.includes('v-cloak');
+            const hasReactMarker = homepageHtml.includes('__NEXT_DATA__') || homepageHtml.includes('_reactRootContainer') || homepageHtml.includes('data-reactroot');
+            const hasAngularMarker = homepageHtml.includes('ng-version') || homepageHtml.includes('ng-app');
+            const isJsRenderedSite = hasShoplazzaMarker || hasShopifyMarker || hasVueMarker || hasReactMarker || hasAngularMarker;
 
-            if (isJsRenderedSite && productLinkCount < 5) {
-              console.log(`Detected JS-rendered site (shoplazza=${hasShoplazzaMarker}, shopify=${hasShopifyMarker}) with only ${productLinkCount} product links. Falling back to browser-based fetch...`);
+            // Also detect e-commerce sites that have shop signals but no product links
+            // (products loaded dynamically regardless of framework)
+            const hasEcommerceSignals = /\/(cart|checkout|categories|collections|shop)\b/i.test(homepageHtml) ||
+              homepageHtml.includes('add-to-cart') || homepageHtml.includes('addToCart');
+
+            if ((isJsRenderedSite || hasEcommerceSignals) && productLinkCount < 5) {
+              const frameworks = [
+                hasShoplazzaMarker && 'shoplazza',
+                hasShopifyMarker && 'shopify',
+                hasVueMarker && 'vue',
+                hasReactMarker && 'react',
+                hasAngularMarker && 'angular',
+                hasEcommerceSignals && !isJsRenderedSite && 'ecommerce-signals',
+              ].filter(Boolean).join('+');
+              console.log(`Detected JS-rendered site (${frameworks}) with only ${productLinkCount} product links. Falling back to browser-based fetch...`);
               homepageHtml = null; // Reset to trigger browser fetch below
             }
           }

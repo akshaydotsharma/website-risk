@@ -17,6 +17,7 @@ import * as cheerio from 'cheerio';
 import { z } from 'zod';
 import Anthropic from '@anthropic-ai/sdk';
 import { prisma } from '../prisma';
+import { sslTolerantDispatcher } from '../ssl-fetch';
 import { DomainPolicy } from './schemas';
 import { fetchWithBrowser } from '../browser';
 
@@ -118,7 +119,7 @@ const POLICY_KEYWORDS: Record<PolicyType, { anchor: RegExp; href: RegExp; conten
     // Href: matches common terms URL patterns (multilingual)
     href: /\/terms|\/terms-of-service|\/terms-and-conditions|\/termsconditions|\/policies\/terms|\/tos(?:$|\/)|\/legal(?:$|\/terms)|\/termos-de-uso|\/termos|\/termos-e-condicoes|\/terminos-de-uso|\/terminos|\/conditions-generales|\/nutzungsbedingungen|\/agb|\/termini/i,
     // Content: keywords that should appear in a terms page (multilingual)
-    content: /terms\s*(of\s*service|and\s*conditions|of\s*use)|user\s*agreement|acceptable\s*use|binding\s*agreement|termos\s*de\s*uso|termos\s*de\s*serviço|acordo\s*do\s*usuário|términos\s*de\s*uso|acuerdo\s*de\s*usuario|conditions\s*générales|accord\s*d'utilisateur|nutzungsbedingungen|nutzervereinbarung|termini\s*di\s*servizio|accordo\s*utente/i,
+    content: /terms\s*(of\s*service|(&|and)\s*conditions|of\s*use)|user\s*agreement|acceptable\s*use|binding\s*agreement|intellectual\s*property|liability|govern\w*\s*law|termos\s*de\s*uso|termos\s*de\s*serviço|acordo\s*do\s*usuário|términos\s*de\s*uso|acuerdo\s*de\s*usuario|conditions\s*générales|accord\s*d'utilisateur|nutzungsbedingungen|nutzervereinbarung|termini\s*di\s*servizio|accordo\s*utente/i,
   },
 };
 
@@ -241,7 +242,10 @@ const REQUEST_TIMEOUT_MS = 8000;
 function normalizeUrl(url: string, baseUrl: string): string {
   try {
     const resolved = new URL(url, baseUrl);
-    resolved.hash = '';
+    // Preserve hash-based routes (e.g., #/privacy-policy) used by SPAs
+    if (!resolved.hash.startsWith('#/')) {
+      resolved.hash = '';
+    }
     return resolved.href;
   } catch {
     return url;
@@ -414,15 +418,18 @@ async function verifyPolicyUrlWithBrowser(
   titleSnippet: string | null;
   finalUrl: string | null;
 }> {
-  const urlPath = new URL(url).pathname.toLowerCase();
-  const pathLooksLikePolicy = /policy|privacy|refund|return|terms|legal|tos|exchange|conditions/i.test(urlPath);
+  const parsedVerifyUrl = new URL(url);
+  const isHashRouteVerify = parsedVerifyUrl.hash.startsWith('#/');
+  // Check both pathname and hash fragment for policy patterns
+  const urlPathOrHash = isHashRouteVerify ? parsedVerifyUrl.hash.toLowerCase() : parsedVerifyUrl.pathname.toLowerCase();
+  const pathLooksLikePolicy = /policy|privacy|refund|return|terms|legal|tos|exchange|conditions/i.test(urlPathOrHash);
 
   try {
     console.log(`[PolicyLinks] Attempting browser verification for ${policyType}: ${url}`);
 
     const browserResult = await fetchWithBrowser(scanId, url, 'policy_link_browser_verify', {
       waitForNetworkIdle: true,
-      additionalWaitMs: 2000,
+      additionalWaitMs: isHashRouteVerify ? 5000 : 2000, // More wait time for SPA hash routes
       scrollToBottom: false,
       expandSections: false,
       timeout: 30000,
@@ -548,8 +555,23 @@ async function verifyPolicyUrl(
   // Low-confidence methods: common_paths (guessed URLs), keyword_proximity (proximity matching)
   const isFromActualHtml = discoveryMethod === 'homepage_html' || discoveryMethod === 'chromium_render' || discoveryMethod === 'llm_semantic';
   const isHighConfidenceMatch = candidateRank >= 70 && isFromActualHtml; // Lower threshold for llm_semantic (rank 70-90)
-  const urlPath = new URL(url).pathname.toLowerCase();
-  const pathLooksLikePolicy = /policy|privacy|refund|return|terms|legal|tos|exchange|conditions/i.test(urlPath);
+  const parsedUrl = new URL(url);
+  const urlPath = parsedUrl.pathname.toLowerCase();
+  const isHashRoute = parsedUrl.hash.startsWith('#/');
+  const pathLooksLikePolicy = /policy|privacy|refund|return|terms|legal|tos|exchange|conditions/i.test(
+    isHashRoute ? parsedUrl.hash.toLowerCase() : urlPath
+  );
+
+  // Hash-based URLs (e.g., /#/privacy-policy) can't be verified via HTTP fetch
+  // because the server ignores the hash fragment. Go straight to browser verification.
+  if (isHashRoute && tryBrowserFallback) {
+    console.log(`[PolicyLinks] Hash route detected for ${policyType}: ${url}, using browser verification`);
+    const browserResult = await verifyPolicyUrlWithBrowser(scanId, url, policyType, targetDomain, allowSubdomains);
+    return {
+      ...browserResult,
+      verificationNotes: `Hash route browser verified: ${browserResult.verificationNotes}`,
+    };
+  }
 
   try {
     // Try HEAD first to check if URL exists
@@ -566,6 +588,8 @@ async function verifyPolicyUrl(
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           Accept: 'text/html,application/xhtml+xml,*/*',
         },
+        // @ts-expect-error -- Node 20+ supports undici dispatcher
+        dispatcher: sslTolerantDispatcher,
       });
       clearTimeout(timeout);
     } catch (headError) {
@@ -582,6 +606,8 @@ async function verifyPolicyUrl(
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           Accept: 'text/html,application/xhtml+xml,*/*',
         },
+        // @ts-expect-error -- Node 20+ supports undici dispatcher
+        dispatcher: sslTolerantDispatcher,
       });
       clearTimeout(getTimeout);
     }
@@ -701,6 +727,8 @@ async function verifyPolicyUrl(
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'text/html,application/xhtml+xml,*/*',
       },
+      // @ts-expect-error -- Node 20+ supports undici dispatcher
+      dispatcher: sslTolerantDispatcher,
     });
     clearTimeout(bodyTimeout);
 
@@ -763,6 +791,23 @@ async function verifyPolicyUrl(
 
     // Extract title snippet
     titleSnippet = extractTitleSnippet(body);
+
+    // Detect SPA shell: tiny HTML with no real text content (just JS bootstrapper)
+    // These sites return 200 for every URL path, so path-based matching is unreliable
+    const strippedText = body
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (body.length < 3000 && strippedText.length < 100) {
+      verificationNotes = 'SPA shell with no real content';
+      await logFetch({
+        scanId, url, method: 'GET', statusCode, contentType,
+        latencyMs: Date.now() - startTime, error: null, discoveredBy: 'policy_link_check',
+      });
+      return { verifiedOk: false, statusCode, contentType, verificationNotes, titleSnippet, finalUrl };
+    }
 
     // Content sanity check - does it contain relevant keywords?
     const textContent = extractTextContent(body);
@@ -842,9 +887,12 @@ function extractFromHomepageHtml(
     if (
       href.startsWith('mailto:') ||
       href.startsWith('tel:') ||
-      href.startsWith('javascript:') ||
-      href.startsWith('#')
+      href.startsWith('javascript:')
     ) {
+      continue;
+    }
+    // Skip plain anchors (#section) but allow hash-based routes (#/path)
+    if (href.startsWith('#') && !href.startsWith('#/')) {
       continue;
     }
 
@@ -882,6 +930,46 @@ function extractFromHomepageHtml(
       }
 
       // Skip if no match
+      if (rank === 0) continue;
+
+      candidates.push({
+        url: fullUrl,
+        policyType,
+        anchorText: anchorText || null,
+        method: 'homepage_html',
+        rank,
+        inFooter,
+      });
+    }
+  }
+
+  // Also extract URLs from onclick="window.open('...')" handlers (no href attribute)
+  const onclickElements = $('[onclick]').toArray();
+  for (const el of onclickElements) {
+    const onclick = $(el).attr('onclick') || '';
+    // Match window.open('/path', ...) or window.open("url", ...) or location.href='...'
+    const urlMatch = onclick.match(/(?:window\.open|location\.href)\s*[=(]\s*['"]([^'"]+)['"]/);
+    if (!urlMatch) continue;
+
+    const href = urlMatch[1];
+    if (href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
+    if (href.startsWith('#') && !href.startsWith('#/')) continue;
+
+    const fullUrl = normalizeUrl(href, homepageUrl);
+    if (!isWithinScope(fullUrl, targetDomain, allowSubdomains)) continue;
+
+    const anchorText = $(el).text().trim();
+    const ariaLabel = $(el).attr('aria-label') || '';
+    const title = $(el).attr('title') || '';
+    const combinedText = `${anchorText} ${ariaLabel} ${title}`;
+    const inFooter = $(el).parents('footer').length > 0 || $(el).parents('[class*="footer"]').length > 0;
+
+    for (const policyType of ['privacy', 'refund', 'terms'] as PolicyType[]) {
+      const keywords = POLICY_KEYWORDS[policyType];
+      let rank = 0;
+      if (keywords.anchor.test(combinedText)) rank += 100;
+      if (keywords.href.test(href)) rank += 50;
+      if (inFooter) rank += 20;
       if (rank === 0) continue;
 
       candidates.push({
@@ -954,11 +1042,11 @@ async function extractWithChromiumRender(
     console.log(`[PolicyLinks] Using Chromium render for ${homepageUrl}`);
 
     const result = await fetchWithBrowser(scanId, homepageUrl, 'policy_links_chromium', {
-      waitForNetworkIdle: true, // Match SKU extraction behavior
+      waitForNetworkIdle: true,
       additionalWaitMs: 5000,
       expandSections: false,
       scrollToBottom: true,
-      timeout: 60000, // Match SKU extraction timeout
+      timeout: 60000,
     });
 
     if (!result.content) {
@@ -975,13 +1063,136 @@ async function extractWithChromiumRender(
     const allCandidates = extractFromHomepageHtml(result.content, homepageUrl, targetDomain, allowSubdomains);
 
     // Filter to only missing types and mark as chromium_render
-    return allCandidates
+    const candidates = allCandidates
       .filter((c) => missingTypes.includes(c.policyType))
       .map((c) => ({ ...c, method: 'chromium_render' as DiscoveryMethod }));
+
+    // If standard anchor extraction found nothing, try click-based discovery
+    // Some SPAs use <div>/<span> with click handlers instead of <a> tags
+    const stillMissing = missingTypes.filter(t => !candidates.some(c => c.policyType === t));
+    if (stillMissing.length > 0) {
+      console.log(`[PolicyLinks] No anchor tags found for ${stillMissing.join(', ')}, trying click-based discovery...`);
+      const clickCandidates = await discoverPolicyLinksByClick(homepageUrl, targetDomain, stillMissing);
+      candidates.push(...clickCandidates);
+    }
+
+    return candidates;
   } catch (error) {
     console.error(`[PolicyLinks] Chromium render failed:`, error);
     return [];
   }
+}
+
+/**
+ * Discover policy links by finding clickable text elements (divs, spans) in footer areas
+ * and clicking them to see where they navigate. Handles SPAs that don't use <a> tags.
+ */
+async function discoverPolicyLinksByClick(
+  homepageUrl: string,
+  targetDomain: string,
+  missingTypes: PolicyType[]
+): Promise<PolicyLinkCandidate[]> {
+  const { chromium } = await import('playwright');
+  const candidates: PolicyLinkCandidate[] = [];
+
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      viewport: { width: 1920, height: 1080 },
+    });
+    const page = await context.newPage();
+    await page.goto(homepageUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.waitForTimeout(3000);
+    // Scroll to bottom to ensure footer is loaded
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(2000);
+
+    // Map policy types to text patterns to look for
+    const textPatterns: Record<PolicyType, RegExp> = {
+      privacy: /privacy\s*policy/i,
+      refund: /re(?:fund|turn)s?\s*policy/i,
+      terms: /terms\s*(?:&|and)?\s*(?:conditions|of\s*(?:service|use))/i,
+    };
+
+    for (const policyType of missingTypes) {
+      const pattern = textPatterns[policyType];
+      try {
+        // Find visible elements matching the pattern text
+        const matchingElements = await page.evaluate((patternStr) => {
+          const regex = new RegExp(patternStr, 'i');
+          const elements: { text: string; index: number }[] = [];
+          const allEls = document.querySelectorAll('div, span, p, li, button');
+          allEls.forEach((el, idx) => {
+            // Only leaf-ish elements with short text
+            const text = el.textContent?.trim() || '';
+            if (text.length > 0 && text.length < 50 && regex.test(text)) {
+              // Check it's a leaf (no nested block elements with different text)
+              const childBlocks = el.querySelectorAll('div, span, p');
+              const isLeaf = childBlocks.length === 0 ||
+                Array.from(childBlocks).every(c => c.textContent?.trim() === text);
+              if (isLeaf) {
+                elements.push({ text, index: idx });
+              }
+            }
+          });
+          return elements;
+        }, pattern.source);
+
+        if (matchingElements.length === 0) continue;
+
+        // Store current URL, click the element, check if URL changed
+        const beforeUrl = page.url();
+        const el = matchingElements[0];
+        console.log(`[PolicyLinks] Click discovery: found "${el.text}" for ${policyType}, clicking...`);
+
+        // Click using text locator
+        const locator = page.locator(`text=${el.text}`).first();
+        await locator.click({ timeout: 5000 });
+        // Wait longer for SPA content to render after navigation
+        await page.waitForTimeout(4000);
+
+        const afterUrl = page.url();
+        if (afterUrl !== beforeUrl) {
+          console.log(`[PolicyLinks] Click navigated to: ${afterUrl}`);
+
+          // Verify the page has relevant content
+          const bodyText = await page.evaluate(() => document.body.innerText?.slice(0, 2000) || '');
+          const contentPattern = POLICY_KEYWORDS[policyType].content;
+          // Also check if the URL itself looks like a policy page (hash routes included)
+          const urlLooksLikePolicy = /policy|privacy|refund|return|terms|legal|tos|exchange|conditions/i.test(afterUrl);
+          if (contentPattern.test(bodyText) || urlLooksLikePolicy) {
+            candidates.push({
+              url: afterUrl,
+              policyType,
+              anchorText: el.text,
+              method: 'chromium_render' as DiscoveryMethod,
+              rank: 85,
+              inFooter: true,
+            });
+            console.log(`[PolicyLinks] ✓ Click discovery found ${policyType}: ${afterUrl}`);
+          } else {
+            console.log(`[PolicyLinks] ✗ Clicked page doesn't contain ${policyType} keywords and URL doesn't match`);
+          }
+
+          // Navigate back for next policy type
+          await page.goto(homepageUrl, { waitUntil: 'networkidle', timeout: 30000 });
+          await page.waitForTimeout(2000);
+          await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+          await page.waitForTimeout(1000);
+        }
+      } catch (clickErr) {
+        console.log(`[PolicyLinks] Click discovery failed for ${policyType}: ${clickErr instanceof Error ? clickErr.message : 'unknown'}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[PolicyLinks] Click discovery error:`, err);
+  } finally {
+    await browser?.close().catch(() => {});
+  }
+
+  return candidates;
 }
 
 // =============================================================================
@@ -1361,6 +1572,8 @@ export async function extractPolicyLinks(
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.5',
         },
+        // @ts-expect-error -- Node 20+ supports undici dispatcher
+        dispatcher: sslTolerantDispatcher,
       });
       clearTimeout(timeout);
 
@@ -1375,8 +1588,17 @@ export async function extractPolicyLinks(
           html.includes('challenge-platform') ||
           (html.includes('Enable JavaScript') && html.length < 10000);
 
-        if (isCloudflareChallenge) {
-          console.log(`[PolicyLinks] Detected Cloudflare/bot protection challenge, falling back to browser...`);
+        // Detect SPA shell: tiny HTML with no real text content
+        const shellText = html
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const isSpaShell = html.length < 3000 && shellText.length < 100;
+
+        if (isCloudflareChallenge || isSpaShell) {
+          console.log(`[PolicyLinks] Detected ${isSpaShell ? 'SPA shell' : 'Cloudflare challenge'} (${html.length} bytes, ${shellText.length} chars text), falling back to browser...`);
           needsChromiumFallback = true;
         } else {
           // Check if this is a JavaScript-rendered page (Shoplazza, Shopify, etc.)
@@ -1582,11 +1804,13 @@ export async function extractPolicyLinks(
   }
 
   // ==========================================================================
-  // Strategy C: Chromium Render Fallback (only if we still have missing types and didn't already use browser)
+  // Strategy C: Chromium Render Fallback (click-based discovery for SPAs)
+  // Run even if browser was already used for homepage — SPAs may use <div> click handlers
+  // instead of <a> tags, so browser-rendered HTML still won't have policy anchors
   // ==========================================================================
   const missingAfterB = (['privacy', 'refund', 'terms'] as PolicyType[]).filter((t) => !foundTypes.has(t));
 
-  if (missingAfterB.length > 0 && !usedBrowserFetch) {
+  if (missingAfterB.length > 0) {
     attempts.chromium_render = true;
     const chromiumCandidates = await extractWithChromiumRender(
       scanId,

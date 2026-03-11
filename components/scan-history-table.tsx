@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useCallback } from "react";
+import { DataPointKey } from "@/lib/constants";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -79,7 +80,7 @@ const SORT_DIRECTION_KEY = "scans_sort_direction";
 
 // Helper to check if a domain has contact details
 function hasContactDetails(dataPoints: DataPoint[]): boolean {
-  const contactDataPoint = dataPoints.find((dp) => dp.key === "contact_details");
+  const contactDataPoint = dataPoints.find((dp) => dp.key === DataPointKey.CONTACT_DETAILS);
   if (!contactDataPoint) return false;
 
   try {
@@ -96,7 +97,7 @@ function hasContactDetails(dataPoints: DataPoint[]): boolean {
 
 // Helper to get AI-generated likelihood score
 function getAiScore(dataPoints: DataPoint[]): { score: number | null; confidence: number | null } {
-  const aiDataPoint = dataPoints.find((dp) => dp.key === "ai_generated_likelihood");
+  const aiDataPoint = dataPoints.find((dp) => dp.key === DataPointKey.AI_LIKELIHOOD);
   if (!aiDataPoint) return { score: null, confidence: null };
 
   try {
@@ -119,7 +120,7 @@ function getRiskScore(dataPoints: DataPoint[]): {
   shellCompany: number | null;
   compliance: number | null;
 } {
-  const riskDataPoint = dataPoints.find((dp) => dp.key === "domain_risk_assessment");
+  const riskDataPoint = dataPoints.find((dp) => dp.key === DataPointKey.RISK_ASSESSMENT);
   if (!riskDataPoint) return { overallScore: null, primaryRiskType: null, confidence: null, phishing: null, shellCompany: null, compliance: null };
 
   try {
@@ -192,7 +193,7 @@ function getScanSummary(domain: Domain) {
   const dp = domain.dataPoints;
 
   const hasContact = (() => {
-    const cdp = dp.find((d) => d.key === "contact_details");
+    const cdp = dp.find((d) => d.key === DataPointKey.CONTACT_DETAILS);
     if (!cdp) return false;
     try {
       const v = JSON.parse(cdp.value);
@@ -201,7 +202,7 @@ function getScanSummary(domain: Domain) {
   })();
 
   const hasAbout = (() => {
-    const adp = dp.find((d) => d.key === "about_page");
+    const adp = dp.find((d) => d.key === DataPointKey.ABOUT_PAGE);
     if (!adp) return false;
     try {
       const v = JSON.parse(adp.value);
@@ -209,10 +210,10 @@ function getScanSummary(domain: Domain) {
     } catch { return false; }
   })();
 
-  const hasPolicy = dp.some((d) => d.key === "policy_links");
+  const hasPolicy = dp.some((d) => d.key === DataPointKey.POLICY_LINKS);
 
   const hasSku = (() => {
-    const sdp = dp.find((d) => d.key === "homepage_sku_summary");
+    const sdp = dp.find((d) => d.key === DataPointKey.HOMEPAGE_SKU_SUMMARY);
     if (!sdp) return false;
     try {
       const v = JSON.parse(sdp.value);
@@ -223,7 +224,7 @@ function getScanSummary(domain: Domain) {
   const hasScreenshot = domain.screenshotCount > 0;
 
   const domainAge = (() => {
-    const sdp = dp.find((d) => d.key === "domain_intel_signals");
+    const sdp = dp.find((d) => d.key === DataPointKey.DOMAIN_INTEL_SIGNALS);
     if (!sdp) return null;
     try {
       const v = JSON.parse(sdp.value);

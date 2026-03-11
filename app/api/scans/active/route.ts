@@ -88,12 +88,24 @@ export async function GET() {
       },
     });
 
+    // Also fetch active investigations
+    const activeInvestigations = await prisma.investigation.findMany({
+      where: { status: { in: ["pending", "scanning", "analyzing"] } },
+      select: { id: true, name: true, status: true, domainCount: true },
+    });
+
     return NextResponse.json({
       domains: domains.map((d) => ({
         id: d.id,
         normalizedUrl: d.normalizedUrl,
         scanStatus: d.scans[0]?.status ?? null,
         scanError: d.scans[0]?.error ?? null,
+      })),
+      investigations: activeInvestigations.map((inv) => ({
+        id: inv.id,
+        name: inv.name || "Investigation",
+        status: inv.status,
+        domainCount: inv.domainCount,
       })),
     });
   } catch (error) {

@@ -1,4 +1,5 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
+import { runInBackground } from "@/lib/runInBackground";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { runAboutUsAnalysis } from "@/lib/aboutUsAnalysis";
@@ -52,11 +53,7 @@ export async function POST(request: Request) {
     // Run analysis in background
     const runProcessing = () => runAboutUsAnalysis(run.id, validIds);
 
-    if (process.env.NODE_ENV !== "development") {
-      after(runProcessing);
-    } else {
-      void runProcessing();
-    }
+    runInBackground(runProcessing);
 
     return NextResponse.json({ id: run.id }, { status: 201 });
   } catch (error) {

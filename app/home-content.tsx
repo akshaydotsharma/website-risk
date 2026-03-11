@@ -82,16 +82,16 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
         startPolling();
         router.push(`/scans/${data.id}`);
       } else {
-        // Bulk scan with server-side concurrency control
-        const response = await fetch("/api/scans/bulk", {
+        // Multiple URLs → create investigation
+        const response = await fetch("/api/investigations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ urls: domains.map((d) => `https://${d}`) }),
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Failed to start bulk scan");
+        if (!response.ok) throw new Error(data.error || "Failed to create investigation");
         startPolling();
-        router.push("/scans");
+        router.push(`/investigations/${data.id}`);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred. Check the URL and try again.");
@@ -153,7 +153,7 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
                 </>
               ) : (
                 <>
-                  Scan{parseDomains(url).length > 1 ? ` (${parseDomains(url).length})` : ""}
+                  {parseDomains(url).length > 1 ? `Investigate (${parseDomains(url).length})` : "Scan"}
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </>
               )}

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Settings, Menu, Bell, CheckCircle2, AlertTriangle, X } from "lucide-react";
+import { Settings, Menu, Bell, CheckCircle2, AlertTriangle, X, Network } from "lucide-react";
 import { DomainSearch } from "@/components/domain-search";
 import { useSidebar } from "@/components/ui/sidebar-context";
 import { useNotifications } from "@/components/notification-context";
@@ -28,11 +28,9 @@ function NotificationBell() {
   }, [open, unreadCount, markAllRead]);
 
   const handleToggle = () => {
-    setOpen((prev) => {
-      // Mark read when closing, not opening — so user sees highlights first
-      if (prev && unreadCount > 0) markAllRead();
-      return !prev;
-    });
+    // Mark read when closing, not opening — so user sees highlights first
+    if (open && unreadCount > 0) markAllRead();
+    setOpen((prev) => !prev);
   };
 
   return (
@@ -74,41 +72,46 @@ function NotificationBell() {
               </div>
             ) : (
               <div className="divide-y">
-                {notifications.map((n) => (
-                  <div
-                    key={n.id}
-                    className={`flex items-start gap-3 px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer group ${!n.read ? "bg-primary/5" : ""}`}
-                    onClick={() => {
-                      router.push(`/scans/${n.domainId}`);
-                      setOpen(false);
-                    }}
-                  >
-                    {n.status === "completed" ? (
-                      <CheckCircle2 className="h-4 w-4 text-success shrink-0 mt-0.5" aria-hidden="true" />
-                    ) : (
-                      <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" aria-hidden="true" />
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-sm truncate ${!n.read ? "font-semibold" : "font-medium"}`}>{n.normalizedUrl}</p>
-                      <p className="text-xs text-muted-foreground">
-                        Scan {n.status} · {formatDistanceToNow(n.createdAt, { addSuffix: true })}
-                      </p>
-                    </div>
-                    {!n.read && (
-                      <span className="w-2 h-2 rounded-full bg-primary shrink-0 mt-1.5" aria-label="Unread" />
-                    )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        dismiss(n.id);
+                {notifications.map((n) => {
+                  const isInvestigation = n.type === "investigation";
+                  return (
+                    <div
+                      key={n.id}
+                      className={`flex items-start gap-3 px-4 py-3 hover:bg-muted/50 transition-colors cursor-pointer group ${!n.read ? (isInvestigation ? "bg-purple-500/5" : "bg-primary/5") : ""}`}
+                      onClick={() => {
+                        router.push(isInvestigation ? `/investigations/${n.domainId}` : `/scans/${n.domainId}`);
+                        setOpen(false);
                       }}
-                      className="p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground hover:!text-foreground hover:bg-muted transition-colors shrink-0"
-                      aria-label="Dismiss"
                     >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
+                      {isInvestigation ? (
+                        <Network className="h-4 w-4 text-purple-500 shrink-0 mt-0.5" aria-hidden="true" />
+                      ) : n.status === "completed" ? (
+                        <CheckCircle2 className="h-4 w-4 text-success shrink-0 mt-0.5" aria-hidden="true" />
+                      ) : (
+                        <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" aria-hidden="true" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-sm truncate ${!n.read ? "font-semibold" : "font-medium"}`}>{n.normalizedUrl}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {isInvestigation ? "Investigation" : "Scan"} {n.status} · {formatDistanceToNow(n.createdAt, { addSuffix: true })}
+                        </p>
+                      </div>
+                      {!n.read && (
+                        <span className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${isInvestigation ? "bg-purple-500" : "bg-primary"}`} aria-label="Unread" />
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          dismiss(n.id);
+                        }}
+                        className="p-1 rounded text-muted-foreground/0 group-hover:text-muted-foreground hover:!text-foreground hover:bg-muted transition-colors shrink-0"
+                        aria-label="Dismiss"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

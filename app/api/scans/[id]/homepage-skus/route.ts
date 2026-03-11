@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { runHomepageSkuExtraction } from "@/lib/domainIntel";
-import type { DomainPolicy } from "@/lib/domainIntel/schemas";
+import { resolveDomainAndScan } from "@/lib/domainUtils";
 
 // Query parameter schema - handle null from searchParams.get()
 const querySchema = z.object({
@@ -228,67 +228,21 @@ export async function GET(
   }
 }
 
-/**
- * POST /api/scans/{id}/homepage-skus
- *
- * Trigger homepage SKU extraction for a domain/scan.
- * This will run the extraction and persist results to the database.
- */
 export async function POST(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
 
-    // Find the domain and scan
-    let domain = await prisma.domain.findUnique({
-      where: { id },
-      include: {
-        scans: {
-          orderBy: { createdAt: "desc" },
-          take: 1,
-        },
-      },
-    });
-
-    // If not found as domain, try as scan ID
-    if (!domain) {
-      const existingScan = await prisma.websiteScan.findUnique({
-        where: { id },
-        include: { domain: true },
-      });
-
-      if (existingScan) {
-        domain = await prisma.domain.findUnique({
-          where: { id: existingScan.domainId },
-          include: {
-            scans: {
-              orderBy: { createdAt: "desc" },
-              take: 1,
-            },
-          },
-        });
-      }
+    const resolved = await resolveDomainAndScan(id);
+    if (!resolved || !resolved.latestScan) {
+      return NextResponse.json({ error: "Domain or scan not found" }, { status: 404 });
     }
 
-    if (!domain) {
-      return NextResponse.json(
-        { error: "Domain not found" },
-        { status: 404 }
-      );
-    }
+    const { domain, latestScan, scanUrl } = resolved;
 
-    const latestScan = domain.scans[0];
-    if (!latestScan) {
-      return NextResponse.json(
-        { error: "No scans found for this domain" },
-        { status: 404 }
-      );
-    }
-
-    // Build policy with default config (all domains are authorized)
-    const policy: DomainPolicy = {
+    const policy = {
       isAuthorized: true,
       allowSubdomains: true,
       respectRobots: true,
@@ -299,16 +253,8 @@ export async function POST(
       requestTimeoutMs: 8000,
     };
 
-    // Run extraction
-    const homepageUrl = latestScan.url || `https://${domain.normalizedUrl}`;
-    console.log(`Running homepage SKU extraction for ${homepageUrl}...`);
-
-    const result = await runHomepageSkuExtraction(
-      latestScan.id,
-      homepageUrl,
-      policy
-    );
-
+    console.log(`Running homepage SKU extraction for ${scanUrl}...`);
+    const result = await runHomepageSkuExtraction(latestScan.id, scanUrl, policy);
     console.log(`Extracted ${result.items.length} homepage SKUs for ${domain.normalizedUrl}`);
 
     return NextResponse.json({

@@ -1,84 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { isDomainAuthorized } from '@/lib/discovery';
-import { runPolicyLinksExtraction, DomainPolicy } from '@/lib/domainIntel';
+import { runPolicyLinksExtraction } from '@/lib/domainIntel';
+import { resolveDomainAndScan, buildDomainPolicy } from '@/lib/domainUtils';
+import { safeJsonParse } from '@/lib/utils';
+import { DataPointKey } from '@/lib/constants';
 
-/**
- * POST /api/scans/[id]/policy-links
- *
- * Extracts and verifies policy links (privacy, refund, terms) for a scan.
- */
 export async function POST(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
 
-    // Find the scan (could be scanId or domainId)
-    let scan = await prisma.websiteScan.findUnique({
-      where: { id },
-      include: {
-        domain: true,
-        policyLinks: true,
-      },
-    });
-
-    // If not found as scan, try to find as domain and get latest scan
-    if (!scan) {
-      const domain = await prisma.domain.findUnique({
-        where: { id },
-        include: {
-          scans: {
-            orderBy: { createdAt: 'desc' },
-            take: 1,
-            include: {
-              policyLinks: true,
-            },
-          },
-        },
-      });
-
-      if (domain && domain.scans.length > 0) {
-        scan = {
-          ...domain.scans[0],
-          domain,
-          policyLinks: domain.scans[0].policyLinks,
-        } as any;
-      }
+    const result = await resolveDomainAndScan(id);
+    if (!result || !result.latestScan) {
+      return NextResponse.json({ error: 'Scan not found' }, { status: 404 });
     }
 
-    if (!scan) {
-      return NextResponse.json(
-        { error: 'Scan not found' },
-        { status: 404 }
-      );
-    }
+    const { domain, latestScan, scanUrl } = result;
+    const authResult = await isDomainAuthorized(scanUrl);
+    const policy = buildDomainPolicy(authResult.config);
 
-    // Get default crawl configuration
-    const authResult = await isDomainAuthorized(scan.url);
-
-    // Build domain policy
-    const policy: DomainPolicy = {
-      isAuthorized: true,
-      allowSubdomains: authResult.config.allowSubdomains,
-      respectRobots: authResult.config.respectRobots,
-      allowRobotsDisallowed: false,
-      maxPagesPerRun: authResult.config.maxPagesPerScan,
-      maxDepth: 2,
-      crawlDelayMs: authResult.config.crawlDelayMs,
-      requestTimeoutMs: 8000,
-    };
-
-    // Run extraction
-    const result = await runPolicyLinksExtraction(scan.id, scan.url, policy);
+    const extraction = await runPolicyLinksExtraction(latestScan.id, scanUrl, policy);
 
     return NextResponse.json({
-      scanId: scan.id,
-      domainId: scan.domainId,
-      policyLinks: result.policyLinks,
-      summary: result.summary,
-      errors: result.errors,
+      scanId: latestScan.id,
+      domainId: domain.id,
+      policyLinks: extraction.policyLinks,
+      summary: extraction.summary,
+      errors: extraction.errors,
     });
   } catch (error) {
     console.error('Error extracting policy links:', error);
@@ -137,7 +88,7 @@ export async function GET(
     const dataPoint = await prisma.scanDataPoint.findFirst({
       where: {
         scanId: id,
-        key: 'policy_links',
+        key: DataPointKey.POLICY_LINKS,
       },
     });
 
@@ -146,14 +97,14 @@ export async function GET(
       const domainDataPoint = await prisma.domainDataPoint.findFirst({
         where: {
           domainId: id,
-          key: 'policy_links',
+          key: DataPointKey.POLICY_LINKS,
         },
       });
       if (domainDataPoint) {
-        summary = JSON.parse(domainDataPoint.value);
+        summary = safeJsonParse(domainDataPoint.value, null);
       }
     } else {
-      summary = JSON.parse(dataPoint.value);
+      summary = safeJsonParse(dataPoint.value, null);
     }
 
     return NextResponse.json({

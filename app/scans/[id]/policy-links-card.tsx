@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardDivider } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import {
   RotateCw,
   ChevronDown,
 } from "lucide-react";
+import { useDataExtraction } from "@/hooks/use-data-extraction";
 
 // Inline expandable details component
 function PolicyDetails({ link }: { link: PolicyLink }) {
@@ -123,84 +124,8 @@ const METHOD_LABELS: Record<string, string> = {
 };
 
 export function PolicyLinksCard({ domainId, initialScanStatus }: PolicyLinksCardProps) {
-  const [data, setData] = useState<PolicyLinksResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [extracting, setExtracting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [scanStatus, setScanStatus] = useState(initialScanStatus);
-
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const response = await fetch(`/api/scans/${domainId}/policy-links`);
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch: ${response.status}`);
-      }
-
-      const result: PolicyLinksResponse = await response.json();
-      setData(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }, [domainId]);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  // Poll for data while scan is processing
-  useEffect(() => {
-    const isScanning = scanStatus === "pending" || scanStatus === "processing";
-    if (!isScanning) return;
-
-    const pollInterval = setInterval(async () => {
-      // Check scan status
-      try {
-        const statusResponse = await fetch(`/api/scans/${domainId}/status`);
-        if (statusResponse.ok) {
-          const statusData = await statusResponse.json();
-          setScanStatus(statusData.status);
-
-          // If scan completed, fetch data one more time
-          if (statusData.status === "completed" || statusData.status === "failed") {
-            fetchData();
-          }
-        }
-      } catch {
-        // Ignore polling errors
-      }
-    }, 2000);
-
-    return () => clearInterval(pollInterval);
-  }, [domainId, scanStatus, fetchData]);
-
-  const handleExtract = async () => {
-    try {
-      setExtracting(true);
-      setError(null);
-
-      const response = await fetch(`/api/scans/${domainId}/policy-links`, {
-        method: "POST",
-      });
-
-      if (!response.ok) {
-        const result = await response.json();
-        throw new Error(result.error || `Failed to extract: ${response.status}`);
-      }
-
-      // Refresh data after extraction
-      await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setExtracting(false);
-    }
-  };
+  const { data, loading, extracting, error, handleExtract } =
+    useDataExtraction<PolicyLinksResponse>(domainId, "policy-links", initialScanStatus);
 
   const getStatusBadge = (link: PolicyLink | null, summaryData?: { url: string | null; verifiedOk: boolean; method: string | null }) => {
     // Check both link (from PolicyLink table) and summaryData (from DomainDataPoint)

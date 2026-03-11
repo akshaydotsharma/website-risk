@@ -15,9 +15,9 @@ function createPrismaClient() {
 
   const pool = new Pool({
     connectionString,
-    connectionTimeoutMillis: 30000, // 30s for Neon cold starts
-    idleTimeoutMillis: 10000, // 10s - free connections faster
-    max: 18, // Increased from 10 for better concurrency
+    connectionTimeoutMillis: 30000,
+    idleTimeoutMillis: 10000,
+    max: 50, // Local Postgres can handle more than Neon
     statement_timeout: 60000, // 60s statement timeout
     query_timeout: 60000, // 60s query timeout
     application_name: "website-risk-app",

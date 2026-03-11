@@ -7,6 +7,7 @@ export interface ScanNotification {
   domainId: string;
   normalizedUrl: string;
   status: "completed" | "failed";
+  type?: "scan" | "investigation";
   read: boolean;
   createdAt: number;
 }
@@ -59,6 +60,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [notifications, setNotifications] = useState<ScanNotification[]>(loadNotifications);
   const [activeScans, setActiveScans] = useState<ActiveScan[]>([]);
   const prevActiveRef = useRef<Map<string, string>>(new Map());
+  const prevInvestigationsRef = useRef<Map<string, string>>(new Map());
   const initializedRef = useRef(false);
   const lastSoundAtRef = useRef(0);
   const pollingRef = useRef<"active" | "idle">("idle");
@@ -104,42 +106,67 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       const currentUrls = current.map((d) => d.normalizedUrl);
       const prevUrls = Array.from(prevActiveRef.current.values());
 
-      console.log(`[Poll:${pollingRef.current}] active=${current.length} [${currentUrls.join(", ")}] | prev=${prevActiveRef.current.size} [${prevUrls.join(", ")}]`);
+      // Track active investigations
+      const currentInvestigations: { id: string; name: string }[] = data.investigations || [];
+      const currentInvIds = new Set(currentInvestigations.map((i) => i.id));
+
+      console.log(`[Poll:${pollingRef.current}] active=${current.length} [${currentUrls.join(", ")}] | prev=${prevActiveRef.current.size} [${prevUrls.join(", ")}] | inv=${currentInvestigations.length}`);
 
       // Detect completions
-      if (initializedRef.current && prevActiveRef.current.size > 0) {
+      if (initializedRef.current) {
         const justCompleted: ScanNotification[] = [];
 
-        for (const [prevId, prevUrl] of prevActiveRef.current) {
-          if (!currentIds.has(prevId)) {
-            console.log(`[Poll] COMPLETED: ${prevUrl} (${prevId})`);
-            justCompleted.push({
-              id: `${prevId}-${Date.now()}`,
-              domainId: prevId,
-              normalizedUrl: prevUrl,
-              status: "completed",
-              read: false,
-              createdAt: Date.now(),
-            });
+        // Domain scan completions
+        if (prevActiveRef.current.size > 0) {
+          for (const [prevId, prevUrl] of prevActiveRef.current) {
+            if (!currentIds.has(prevId)) {
+              console.log(`[Poll] COMPLETED: ${prevUrl} (${prevId})`);
+              justCompleted.push({
+                id: `${prevId}-${Date.now()}`,
+                domainId: prevId,
+                normalizedUrl: prevUrl,
+                status: "completed",
+                type: "scan",
+                read: false,
+                createdAt: Date.now(),
+              });
+            }
+          }
+        }
+
+        // Investigation completions
+        if (prevInvestigationsRef.current.size > 0) {
+          for (const [prevId, prevName] of prevInvestigationsRef.current) {
+            if (!currentInvIds.has(prevId)) {
+              console.log(`[Poll] INVESTIGATION COMPLETED: ${prevName} (${prevId})`);
+              justCompleted.push({
+                id: `inv-${prevId}-${Date.now()}`,
+                domainId: prevId,
+                normalizedUrl: prevName,
+                status: "completed",
+                type: "investigation",
+                read: false,
+                createdAt: Date.now(),
+              });
+            }
           }
         }
 
         if (justCompleted.length > 0 && mountedRef.current) {
-          const urls = justCompleted.map((n) => n.normalizedUrl).join(", ");
-          console.log(`[Poll] ${justCompleted.length} scan(s) completed: ${urls} — triggering sound`);
-          playSound(`${justCompleted.length} completed: ${urls}`);
+          const names = justCompleted.map((n) => n.normalizedUrl).join(", ");
+          console.log(`[Poll] ${justCompleted.length} item(s) completed: ${names} — triggering sound`);
+          playSound(`${justCompleted.length} completed: ${names}`);
           setNotifications((prev) => {
             const recentCutoff = Date.now() - 30_000;
             const deduped = justCompleted.filter(
               (n) => !prev.some((p) => p.domainId === n.domainId && p.createdAt > recentCutoff)
             );
-            console.log(`[Poll] Notifications: ${justCompleted.length} completed, ${deduped.length} after dedup, ${prev.length} existing`);
             if (deduped.length === 0) return prev;
             return [...deduped, ...prev];
           });
         }
-      } else if (!initializedRef.current) {
-        console.log(`[Poll] First poll — initializing with ${current.length} active scans`);
+      } else {
+        console.log(`[Poll] First poll — initializing with ${current.length} active scans, ${currentInvestigations.length} investigations`);
       }
 
       initializedRef.current = true;
@@ -149,10 +176,16 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       }
       prevActiveRef.current = newMap;
 
+      const newInvMap = new Map<string, string>();
+      for (const inv of currentInvestigations) {
+        newInvMap.set(inv.id, inv.name);
+      }
+      prevInvestigationsRef.current = newInvMap;
+
       if (mountedRef.current) setActiveScans(current);
 
       // Transition between active/idle polling
-      return current.length;
+      return current.length + currentInvestigations.length;
     } catch (err) {
       console.error("[Poll] Error:", err);
       return -1;

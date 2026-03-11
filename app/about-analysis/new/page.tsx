@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { DomainSelector } from "./domain-selector";
+import { DataPointKey } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -7,15 +8,15 @@ async function getDomainsWithAboutData() {
   const domains = await prisma.domain.findMany({
     include: {
       dataPoints: {
-        where: { key: { in: ["about_page", "domain_risk_assessment"] } },
+        where: { key: { in: [DataPointKey.ABOUT_PAGE, DataPointKey.RISK_ASSESSMENT] } },
       },
     },
     orderBy: { lastCheckedAt: "desc" },
   });
 
   return domains.map((d) => {
-    const aboutDp = d.dataPoints.find((dp) => dp.key === "about_page");
-    const riskDp = d.dataPoints.find((dp) => dp.key === "domain_risk_assessment");
+    const aboutDp = d.dataPoints.find((dp) => dp.key === DataPointKey.ABOUT_PAGE);
+    const riskDp = d.dataPoints.find((dp) => dp.key === DataPointKey.RISK_ASSESSMENT);
     let hasAboutText = false;
     if (aboutDp) {
       try {

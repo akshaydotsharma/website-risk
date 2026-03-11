@@ -3,10 +3,10 @@
  * Parses free-text WHOIS output to extract registration dates
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface WhoisResult {
   registrationDate: string | null;  // ISO 8601 date
@@ -162,7 +162,9 @@ function extractWithPatterns(text: string, patterns: RegExp[]): string | null {
 export async function lookupWhois(domain: string): Promise<WhoisResult> {
   try {
     // Run whois command with timeout
-    const { stdout, stderr } = await execAsync(`whois ${domain}`, {
+    // Use execFile (not exec) to prevent command injection — domain is passed as an argument, not interpolated into a shell string
+    const sanitized = domain.replace(/[^a-zA-Z0-9.\-]/g, "");
+    const { stdout, stderr } = await execFileAsync("whois", [sanitized], {
       timeout: 15000, // 15 second timeout
       maxBuffer: 1024 * 1024, // 1MB buffer
     });

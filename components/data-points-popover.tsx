@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { DataPointKey } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import {
   Popover,
@@ -25,7 +26,7 @@ export function DataPointsPopover({ dataPoints }: DataPointsPopoverProps) {
   const [open, setOpen] = useState(false);
 
   // Find contact details data point
-  const contactDataPoint = dataPoints.find((dp) => dp.key === "contact_details");
+  const contactDataPoint = dataPoints.find((dp) => dp.key === DataPointKey.CONTACT_DETAILS);
 
   // Parse contact details if available
   let contactDetails: ContactDetails | null = null;

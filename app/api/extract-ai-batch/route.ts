@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { extractAiGeneratedLikelihood } from "@/lib/extractors";
+import { saveDataPoint } from "@/lib/dataPointUtils";
+import { DataPointKey } from "@/lib/constants";
 
 /**
  * POST /api/extract-ai-batch
@@ -40,7 +42,7 @@ export async function POST(request: Request) {
           NOT: {
             dataPoints: {
               some: {
-                key: "ai_generated_likelihood",
+                key: DataPointKey.AI_LIKELIHOOD,
               },
             },
           },
@@ -97,52 +99,20 @@ export async function POST(request: Request) {
           domain.normalizedUrl
         );
 
-        // Save the results
-        await prisma.$transaction([
-          // Upsert to ScanDataPoint
-          prisma.scanDataPoint.deleteMany({
-            where: {
-              scanId: latestScan.id,
-              key: aiResult.key,
-            },
-          }),
-        ]);
+        // Delete existing then save
+        await prisma.scanDataPoint.deleteMany({
+          where: { scanId: latestScan.id, key: aiResult.key },
+        });
 
-        await prisma.$transaction([
-          prisma.scanDataPoint.create({
-            data: {
-              scanId: latestScan.id,
-              key: aiResult.key,
-              label: aiResult.label,
-              value: JSON.stringify(aiResult.value),
-              sources: JSON.stringify(aiResult.sources),
-              rawOpenAIResponse: JSON.stringify(aiResult.rawOpenAIResponse),
-            },
-          }),
-          prisma.domainDataPoint.upsert({
-            where: {
-              domainId_key: {
-                domainId: domain.id,
-                key: aiResult.key,
-              },
-            },
-            create: {
-              domainId: domain.id,
-              key: aiResult.key,
-              label: aiResult.label,
-              value: JSON.stringify(aiResult.value),
-              sources: JSON.stringify(aiResult.sources),
-              rawOpenAIResponse: JSON.stringify(aiResult.rawOpenAIResponse),
-            },
-            update: {
-              label: aiResult.label,
-              value: JSON.stringify(aiResult.value),
-              sources: JSON.stringify(aiResult.sources),
-              rawOpenAIResponse: JSON.stringify(aiResult.rawOpenAIResponse),
-              extractedAt: new Date(),
-            },
-          }),
-        ]);
+        await saveDataPoint(
+          latestScan.id,
+          domain.id,
+          aiResult.key,
+          aiResult.label,
+          aiResult.value,
+          aiResult.sources,
+          aiResult.rawOpenAIResponse
+        );
 
         results.push({
           domain: domain.normalizedUrl,
@@ -197,7 +167,7 @@ export async function GET() {
       where: {
         dataPoints: {
           some: {
-            key: "ai_generated_likelihood",
+            key: DataPointKey.AI_LIKELIHOOD,
           },
         },
       },

@@ -21,7 +21,8 @@ import {
   Fingerprint,
   CheckCircle2,
 } from "lucide-react";
-import { getScoreTextColor, getScoreBgColorSubtle, getScoreBorderLeftColor } from "@/lib/utils";
+import { getScoreTextColor, getScoreBorderLeftColor } from "@/lib/utils";
+import { DataPointKey } from "@/lib/constants";
 import Link from "next/link";
 
 // =============================================================================
@@ -40,7 +41,7 @@ interface KeywordHit {
   count: number;
 }
 
-interface PairData {
+export interface PairData {
   id: string;
   domainAId: string;
   domainBId: string;
@@ -54,7 +55,7 @@ interface PairData {
   keywordHitsB: KeywordHit[];
 }
 
-interface DomainText {
+export interface DomainText {
   domainId: string;
   url: string;
   aboutText: string;
@@ -62,7 +63,7 @@ interface DomainText {
   pageTexts: { key: string; label: string; text: string; pageUrl?: string }[];
 }
 
-interface SimilaritySummary {
+export interface SimilaritySummary {
   similarCount: number;
   highSimilarCount: number;
   maxSimilarity: number;
@@ -93,73 +94,10 @@ interface SimilarityTabsProps {
 // Helpers
 // =============================================================================
 
-function fingerprint(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
-}
-
-function splitSentences(text: string): string[] {
-  return text
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 10);
-}
-
-function cleanAboutText(raw: string): string {
-  return raw.replace(/\s+/g, " ").trim();
-}
-
-function getSharedKeywords(textA: string, textB: string): Set<string> {
-  const STOP_WORDS = new Set([
-    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "is", "it", "this", "that", "are", "was",
-    "were", "be", "been", "being", "have", "has", "had", "do", "does",
-    "did", "will", "would", "could", "should", "may", "might", "shall",
-    "can", "not", "no", "we", "our", "us", "you", "your", "they", "their",
-    "them", "he", "she", "his", "her", "its", "all", "each", "every",
-    "any", "some", "as", "so", "if", "than", "more", "also", "very",
-    "just", "about", "over", "such", "into", "through", "after", "before",
-    "between", "under", "above", "up", "out", "off", "down", "then",
-    "here", "there", "when", "where", "how", "what", "which", "who",
-    "whom", "why", "while", "during", "because", "both", "many",
-  ]);
-  const tokenize = (t: string) =>
-    t.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w) => w.length > 3 && !STOP_WORDS.has(w));
-  const wordsA = new Set(tokenize(textA));
-  const wordsB = new Set(tokenize(textB));
-  const shared = new Set<string>();
-  for (const w of wordsA) {
-    if (wordsB.has(w)) shared.add(w);
-  }
-  return shared;
-}
+import { fingerprint, splitSentences, cleanAboutText, getSharedKeywords } from "@/lib/textAnalysisUtils";
+import { ScoreBadge, StatLabel, scoreToColor } from "./shared-primitives";
 
 const SCAM_KEYWORDS = ["uniqueness", "unique"];
-
-function ScoreBadge({ score }: { score: number }) {
-  return (
-    <span className={`text-sm font-bold tabular-nums px-2 py-0.5 rounded-md ${getScoreBgColorSubtle(score)} ${getScoreTextColor(score)}`}>
-      {score}
-    </span>
-  );
-}
-
-function StatLabel({ label, tooltip }: { label: string; tooltip: string }) {
-  return (
-    <div className="stat-card-label">
-      {label}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button type="button" className="ml-1 inline-flex items-center">
-            <Info className="h-3 w-3 text-muted-foreground/50 hover:text-muted-foreground transition-colors" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-[240px] text-xs leading-relaxed font-normal normal-case tracking-normal">
-          {tooltip}
-        </TooltipContent>
-      </Tooltip>
-    </div>
-  );
-}
 
 // =============================================================================
 // Summary Tab
@@ -229,10 +167,10 @@ function SummaryTab({
           <StatLabel label="Domains" tooltip="Number of domains compared against" />
           <p className="stat-card-value">{summary.similarCount}</p>
         </div>
-        <div className={`stat-card border-l-4 ${summary.uniquenessScore > 0 ? "border-l-destructive" : "border-l-success"}`}>
-          <StatLabel label="Uniqueness" tooltip="Whether this domain's pages contain uniqueness-related keywords (e.g. 'unique', 'one of a kind')" />
-          <p className={`stat-card-value ${summary.uniquenessScore > 0 ? "text-destructive" : "text-success"}`}>
-            {summary.uniquenessScore > 0 ? "Yes" : "No"}
+        <div className={`stat-card border-l-4 ${uniquenessExcerpts.length > 0 ? "border-l-destructive" : "border-l-success"}`}>
+          <StatLabel label="Uniqueness" tooltip="Whether this domain's pages contain uniqueness-related keywords (e.g. 'unique', 'one of a kind') — a common scam signal" />
+          <p className={`stat-card-value ${uniquenessExcerpts.length > 0 ? "text-destructive" : "text-success"}`}>
+            {uniquenessExcerpts.length > 0 ? "Yes" : "No"}
           </p>
         </div>
         <div className={`stat-card border-l-4 ${getScoreBorderLeftColor(summary.maxSimilarity)}`}>
@@ -373,13 +311,6 @@ function SummaryTab({
 // Cluster Graph Visualization
 // =============================================================================
 
-function scoreToColor(score: number): string {
-  if (score >= 85) return "hsl(0, 72%, 51%)";
-  if (score >= 70) return "hsl(25, 95%, 53%)";
-  if (score >= 40) return "hsl(45, 93%, 47%)";
-  return "hsl(142, 71%, 45%)";
-}
-
 interface GraphNode {
   domainId: string;
   url: string;
@@ -389,8 +320,8 @@ interface GraphNode {
   y: number;
 }
 
-const GRAPH_VW = 1000;
-const GRAPH_VH = 700;
+const GRAPH_VW = 1200;
+const GRAPH_VH = 900;
 
 function computeNodePositions(count: number): { x: number; y: number }[] {
   const cx = GRAPH_VW / 2;
@@ -401,8 +332,8 @@ function computeNodePositions(count: number): { x: number; y: number }[] {
 
   // Hub-and-spoke: first node at center, rest on radial ring
   const others = count - 1;
-  const baseRadius = Math.min(GRAPH_VW, GRAPH_VH) * 0.34;
-  const radius = others > 8 ? baseRadius * (1 + (others - 8) * 0.04) : baseRadius;
+  const baseRadius = Math.min(GRAPH_VW, GRAPH_VH) * 0.38;
+  const radius = others > 8 ? baseRadius * (1 + (others - 8) * 0.05) : baseRadius;
   const positions: { x: number; y: number }[] = [{ x: cx, y: cy }];
   for (let i = 0; i < others; i++) {
     const angle = (2 * Math.PI * i) / others - Math.PI / 2;
@@ -441,13 +372,123 @@ function ClusterGraphNode({ node }: { node: GraphNode }) {
           </Link>
         )}
       </div>
-      <div className="flex items-center justify-center gap-2">
-        <ScoreBadge score={node.score} />
-        {node.sharedCount > 0 && (
-          <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-            {node.sharedCount} shared {node.sharedCount === 1 ? "sentence" : "sentences"}
-          </span>
-        )}
+    </div>
+  );
+}
+
+function HubSpokeGraph({
+  domainUrl,
+  members,
+  avgScore,
+}: {
+  domainUrl: string;
+  members: string[];
+  avgScore: number;
+}) {
+  const VW = 900;
+  const VH = 700;
+  const cx = VW / 2;
+  const cy = VH / 2;
+
+  // Position members in a circle around center
+  const count = members.length;
+  const baseRadius = Math.min(VW, VH) * 0.34;
+  const radius = count > 10 ? baseRadius * (1 + (count - 10) * 0.03) : baseRadius;
+
+  const positions = members.map((_, i) => {
+    const angle = (2 * Math.PI * i) / count - Math.PI / 2;
+    return {
+      x: cx + radius * Math.cos(angle),
+      y: cy + radius * Math.sin(angle),
+    };
+  });
+
+  const scoreColor = avgScore >= 80 ? "hsl(0, 72%, 51%)" : avgScore >= 60 ? "hsl(25, 95%, 53%)" : "hsl(45, 93%, 47%)";
+
+  return (
+    <div className="relative w-full rounded-xl border bg-muted/40 overflow-hidden" style={{ minHeight: 420 }}>
+      <div className="relative w-full" style={{ aspectRatio: `${VW} / ${VH}`, minHeight: 420 }}>
+        {/* SVG lines from center to each node */}
+        <svg
+          viewBox={`0 0 ${VW} ${VH}`}
+          className="absolute inset-0 w-full h-full pointer-events-none"
+        >
+          {positions.map((pos, i) => (
+            <line
+              key={i}
+              x1={cx} y1={cy}
+              x2={pos.x} y2={pos.y}
+              stroke={scoreColor}
+              strokeWidth={1.5}
+              strokeOpacity={0.2}
+              strokeDasharray="6,4"
+            />
+          ))}
+        </svg>
+
+        {/* Central hub node */}
+        <div
+          className="absolute z-10"
+          style={{
+            left: `${(cx / VW) * 100}%`,
+            top: `${(cy / VH) * 100}%`,
+            transform: "translate(-50%, -50%)",
+          }}
+        >
+          <div className="flex items-center justify-center w-16 h-16 rounded-full bg-violet-100 border-2 border-violet-300 shadow-md dark:bg-violet-900/40 dark:border-violet-600">
+            <Network className="h-6 w-6 text-violet-600 dark:text-violet-300" />
+          </div>
+        </div>
+
+        {/* Spoke nodes */}
+        {members.map((url, i) => {
+          const pos = positions[i];
+          const isHub = url === domainUrl;
+          return (
+            <div
+              key={url}
+              className="absolute z-10"
+              style={{
+                left: `${(pos.x / VW) * 100}%`,
+                top: `${(pos.y / VH) * 100}%`,
+                transform: "translate(-50%, -50%)",
+              }}
+            >
+              <a
+                href={`https://${url}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`block px-3 py-1.5 rounded-full text-xs font-medium shadow-sm transition-all hover:shadow-md hover:scale-105 whitespace-nowrap ${
+                  isHub
+                    ? "bg-violet-100 text-violet-700 border border-violet-200 dark:bg-violet-900/40 dark:text-violet-300 dark:border-violet-700"
+                    : "bg-background text-foreground border hover:border-violet-300"
+                }`}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Globe className="h-3 w-3 text-muted-foreground/60 flex-shrink-0" />
+                  {url}
+                </span>
+              </a>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div className="absolute bottom-3 left-4 right-4 z-20 flex items-center gap-5 text-[10px] text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <span className="w-3 h-3 rounded-full bg-violet-100 border border-violet-300 flex-shrink-0" />
+          Cluster hub
+        </span>
+        <span className="flex items-center gap-1.5">
+          <svg width="24" height="2" className="flex-shrink-0">
+            <line x1="0" y1="1" x2="24" y2="1" stroke="currentColor" strokeWidth="1.5" strokeDasharray="6,4" strokeOpacity="0.3" />
+          </svg>
+          Connected
+        </span>
+        <span className="ml-auto opacity-70">
+          {members.length} sites · Click to open
+        </span>
       </div>
     </div>
   );
@@ -631,49 +672,49 @@ function ClusterGraph({
 
   const nodeByUrl = new Map(nodes.map((n) => [n.url, n]));
 
-  // Build edges from cluster pairs (hub → spoke)
+  // Build edges from cluster pairs (hub → spoke) and cross-links
   type EdgeData = { nA: GraphNode; nB: GraphNode; score: number; topPage: { label: string; score: number } | null; isCrossLink: boolean };
 
-  const hubEdges = clusterPairs
-    .filter((p) => p.compositeScore >= 50)
-    .map((p) => {
-      const nA = nodeByUrl.get(p.domainAUrl);
-      const nB = nodeByUrl.get(p.domainBUrl);
-      if (!nA || !nB) return null;
+  const edges = useMemo(() => {
+    const hubEdges = clusterPairs
+      .filter((p) => p.compositeScore >= 50)
+      .map((p) => {
+        const nA = nodeByUrl.get(p.domainAUrl);
+        const nB = nodeByUrl.get(p.domainBUrl);
+        if (!nA || !nB) return null;
 
-      let topPage: { label: string; score: number } | null = null;
-      if (p.pageScores && p.pageScores.length > 0) {
-        const sorted = [...p.pageScores].sort((a, b) => b.score - a.score);
-        topPage = { label: sorted[0].label, score: sorted[0].score };
-      }
+        let topPage: { label: string; score: number } | null = null;
+        if (p.pageScores && p.pageScores.length > 0) {
+          const sorted = [...p.pageScores].sort((a, b) => b.score - a.score);
+          topPage = { label: sorted[0].label, score: sorted[0].score };
+        }
 
-      return { nA, nB, score: p.compositeScore, topPage, isCrossLink: false };
-    })
-    .filter(Boolean) as EdgeData[];
+        return { nA, nB, score: p.compositeScore, topPage, isCrossLink: false } as EdgeData;
+      })
+      .filter(Boolean) as EdgeData[];
 
-  // Build cross-link edges (spoke ↔ spoke)
-  const hubEdgeSet = new Set(hubEdges.map((e) => [e.nA.url, e.nB.url].sort().join("|")));
-  const crossEdges = crossLinks
-    .filter((p) => p.compositeScore >= 50)
-    .map((p) => {
-      const nA = nodeByUrl.get(p.domainAUrl);
-      const nB = nodeByUrl.get(p.domainBUrl);
-      if (!nA || !nB) return null;
-      // Skip if already a hub edge
-      const key = [nA.url, nB.url].sort().join("|");
-      if (hubEdgeSet.has(key)) return null;
+    const hubEdgeSet = new Set(hubEdges.map((e) => [e.nA.url, e.nB.url].sort().join("|")));
+    const crossEdges = crossLinks
+      .filter((p) => p.compositeScore >= 50)
+      .map((p) => {
+        const nA = nodeByUrl.get(p.domainAUrl);
+        const nB = nodeByUrl.get(p.domainBUrl);
+        if (!nA || !nB) return null;
+        const key = [nA.url, nB.url].sort().join("|");
+        if (hubEdgeSet.has(key)) return null;
 
-      let topPage: { label: string; score: number } | null = null;
-      if (p.pageScores && p.pageScores.length > 0) {
-        const sorted = [...p.pageScores].sort((a, b) => b.score - a.score);
-        topPage = { label: sorted[0].label, score: sorted[0].score };
-      }
+        let topPage: { label: string; score: number } | null = null;
+        if (p.pageScores && p.pageScores.length > 0) {
+          const sorted = [...p.pageScores].sort((a, b) => b.score - a.score);
+          topPage = { label: sorted[0].label, score: sorted[0].score };
+        }
 
-      return { nA, nB, score: p.compositeScore, topPage, isCrossLink: true };
-    })
-    .filter(Boolean) as EdgeData[];
+        return { nA, nB, score: p.compositeScore, topPage, isCrossLink: true } as EdgeData;
+      })
+      .filter(Boolean) as EdgeData[];
 
-  const edges = [...hubEdges, ...crossEdges];
+    return [...hubEdges, ...crossEdges];
+  }, [clusterPairs, crossLinks, nodeByUrl]);
 
   // Selection-based highlighting
   const connectedUrls = useMemo(() => {
@@ -921,7 +962,7 @@ function ClusterGraph({
           </svg>
           Direct link
         </span>
-        {crossEdges.length > 0 && (
+        {edges.some((e) => e.isCrossLink) && (
           <span className="flex items-center gap-1.5">
             <svg width="24" height="2" className="flex-shrink-0">
               <line x1="0" y1="1" x2="24" y2="1" stroke="currentColor" strokeWidth="1" strokeDasharray="2,3" strokeOpacity="0.4" />
@@ -939,7 +980,7 @@ function ClusterGraph({
           </span>
         ) : (
           <span className="ml-auto opacity-70">
-            {nodes.length} sites · {hubEdges.length} direct{crossEdges.length > 0 ? ` + ${crossEdges.length} cross` : ""} · Click a node to focus
+            {nodes.length} sites · {edges.filter((e) => !e.isCrossLink).length} direct{edges.some((e) => e.isCrossLink) ? ` + ${edges.filter((e) => e.isCrossLink).length} cross` : ""} · Click a node to focus
           </span>
         )}
       </div>
@@ -951,20 +992,74 @@ function ClusterGraph({
 // Clusters Tab
 // =============================================================================
 
-function ClustersTab({
+export function ClustersTab({
   domainId,
   domainUrl,
   summary,
   pairs,
   crossLinks = [],
+  allPairs = [],
+  hubSpoke = false,
 }: {
   domainId: string;
   domainUrl: string;
   summary: SimilaritySummary;
   pairs: PairData[];
   crossLinks?: PairData[];
+  allPairs?: PairData[];
+  hubSpoke?: boolean;
 }) {
-  if (summary.clusterSize === 0) {
+  // Multi-cluster mode: compute clusters from allPairs using union-find
+  const clusters = useMemo(() => {
+    const pairsToUse = allPairs.length > 0 ? allPairs : pairs.filter((p) => p.compositeScore >= 50);
+    if (pairsToUse.length === 0) return [];
+
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      if (!parent.has(x)) parent.set(x, x);
+      if (parent.get(x) !== x) parent.set(x, find(parent.get(x)!));
+      return parent.get(x)!;
+    };
+    const union = (a: string, b: string) => { parent.set(find(a), find(b)); };
+
+    // Build url maps for lookup
+    const idToUrl = new Map<string, string>();
+    for (const p of pairsToUse) {
+      idToUrl.set(p.domainAId, p.domainAUrl);
+      idToUrl.set(p.domainBId, p.domainBUrl);
+      union(p.domainAId, p.domainBId);
+    }
+
+    // Group by root
+    const groups = new Map<string, Set<string>>();
+    for (const p of pairsToUse) {
+      for (const id of [p.domainAId, p.domainBId]) {
+        const root = find(id);
+        if (!groups.has(root)) groups.set(root, new Set());
+        groups.get(root)!.add(id);
+      }
+    }
+
+    // Build cluster data, largest first
+    return [...groups.values()]
+      .filter((g) => g.size >= 2)
+      .sort((a, b) => b.size - a.size)
+      .map((memberIds) => {
+        const memberUrls = [...memberIds].map((id) => idToUrl.get(id) || "").filter(Boolean);
+        const clusterPairsList = pairsToUse.filter(
+          (p) => memberIds.has(p.domainAId) && memberIds.has(p.domainBId)
+        );
+        const scores = clusterPairsList.map((p) => p.compositeScore);
+        const avg = scores.length > 0 ? Math.round(scores.reduce((s, v) => s + v, 0) / scores.length) : 0;
+        const max = scores.length > 0 ? Math.max(...scores) : 0;
+        const totalShared = clusterPairsList.reduce((s, p) => s + p.sharedSentenceCount, 0);
+        const avgSharedPerPair = clusterPairsList.length > 0 ? Math.round(totalShared / clusterPairsList.length) : 0;
+        const exampleSentence = clusterPairsList.find((p) => p.sharedSentences.length > 0)?.sharedSentences[0];
+        return { memberUrls, pairs: clusterPairsList, avgScore: avg, maxScore: max, avgSharedPerPair, exampleSentence };
+      });
+  }, [pairs, allPairs]);
+
+  if (clusters.length === 0 && summary.clusterSize === 0) {
     return (
       <div className="text-center text-muted-foreground py-12">
         <Network className="h-10 w-10 mx-auto mb-3 opacity-50" />
@@ -976,19 +1071,96 @@ function ClustersTab({
     );
   }
 
-  // Build pairs within the cluster (high-similarity only)
+  // Hub-spoke multi-cluster mode
+  if (hubSpoke && clusters.length > 0) {
+    return (
+      <div className="space-y-8">
+        {clusters.map((cluster, idx) => {
+          const confidence = cluster.avgScore >= 70 ? "High" : "Moderate";
+          return (
+            <div key={idx} className="space-y-4">
+              {/* Cluster header card */}
+              <div className="rounded-xl border bg-card overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 bg-muted/30">
+                  <div className="flex items-center gap-2">
+                    <Users className="h-4 w-4 text-primary" />
+                    <span className="text-sm font-semibold">Cluster {idx + 1}</span>
+                    <Badge variant="secondary" className="text-[10px]">
+                      {cluster.memberUrls.length} sites
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm">
+                    <span className="text-muted-foreground">Avg</span>
+                    <ScoreBadge score={cluster.avgScore} />
+                    <span className="text-muted-foreground">/</span>
+                    <span className="text-muted-foreground">Max</span>
+                    <ScoreBadge score={cluster.maxScore} />
+                  </div>
+                </div>
+                <div className="px-4 py-3 border-t border-l-4 border-l-primary bg-card">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-sm font-semibold">Summary</span>
+                    <Badge variant={confidence === "High" ? "danger-subtle" : "warning-subtle"} className="text-[10px]">
+                      {confidence}
+                    </Badge>
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    These {cluster.memberUrls.length} websites share common sentences on their pages,
+                    with an average of {cluster.avgSharedPerPair} identical {cluster.avgSharedPerPair === 1 ? "sentence" : "sentences"} per pair.
+                    The content between these websites is {cluster.avgScore >= 70 ? "very similar" : "moderately similar"} with
+                    an avg. similarity score of {cluster.avgScore}.
+                  </p>
+                  {cluster.exampleSentence && (
+                    <p className="text-sm text-muted-foreground/60 italic mt-2">
+                      e.g. &ldquo;{cluster.exampleSentence.length > 80 ? cluster.exampleSentence.slice(0, 80) + "..." : cluster.exampleSentence}&rdquo;
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Cluster member chips */}
+              <div className="flex flex-wrap gap-1.5">
+                {cluster.memberUrls.map((url, i) => (
+                  <a
+                    key={url}
+                    href={`https://${url}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`px-3 py-1 rounded-full text-xs transition-colors cursor-pointer ${
+                      i === 0
+                        ? "bg-violet-100 text-violet-700 font-medium hover:bg-violet-200 dark:bg-violet-900/30 dark:text-violet-300 dark:hover:bg-violet-900/50"
+                        : "bg-violet-50 text-violet-600 hover:bg-violet-100 dark:bg-violet-900/20 dark:text-violet-400 dark:hover:bg-violet-900/40"
+                    }`}
+                  >
+                    {url}
+                  </a>
+                ))}
+              </div>
+
+              {/* Hub-spoke graph */}
+              <HubSpokeGraph
+                domainUrl={cluster.memberUrls[0]}
+                members={cluster.memberUrls}
+                avgScore={cluster.avgScore}
+              />
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // Single-cluster legacy mode (scan detail page)
   const clusterPairs = pairs.filter((p) => {
     const otherUrl = p.domainAId === domainId ? p.domainBUrl : p.domainAUrl;
     return summary.clusterMembers.includes(otherUrl) && p.compositeScore >= 50;
   });
 
-  // Only count members that have at least one edge >= 50
   const connectedMembers = new Set<string>([domainUrl]);
   for (const p of clusterPairs) {
     connectedMembers.add(p.domainAUrl);
     connectedMembers.add(p.domainBUrl);
   }
-  // Count 2nd-degree nodes from cross-links
   const secondDegreeCount = crossLinks.filter((p) => {
     const aNew = !connectedMembers.has(p.domainAUrl);
     const bNew = !connectedMembers.has(p.domainBUrl);
@@ -1006,19 +1178,15 @@ function ClustersTab({
     : 0;
   const maxScore = clusterScores.length > 0 ? Math.max(...clusterScores) : 0;
 
-  // Total shared sentences in cluster
   const totalShared = clusterPairs.reduce((s, p) => s + p.sharedSentenceCount, 0);
   const avgSharedPerPair = clusterPairs.length > 0 ? Math.round(totalShared / clusterPairs.length) : 0;
 
-  // Find an example shared sentence
   const exampleSentence = clusterPairs.find((p) => p.sharedSentences.length > 0)?.sharedSentences[0];
 
-  // Confidence label
   const confidence = avgScore >= 70 ? "High" : "Moderate";
 
   return (
     <div className="space-y-6">
-      {/* Cluster accordion-style header */}
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 bg-muted/30">
           <div className="flex items-center gap-2">
@@ -1036,8 +1204,6 @@ function ClustersTab({
             <ScoreBadge score={maxScore} />
           </div>
         </div>
-
-        {/* Summary explanation */}
         <div className="px-4 py-3 border-t border-l-4 border-l-primary bg-card">
           <div className="flex items-center gap-2 mb-1.5">
             <span className="text-sm font-semibold">Summary</span>
@@ -1059,7 +1225,6 @@ function ClustersTab({
         </div>
       </div>
 
-      {/* Cluster Graph */}
       <ClusterGraph
         domainId={domainId}
         domainUrl={domainUrl}
@@ -1068,7 +1233,6 @@ function ClustersTab({
         crossLinks={crossLinks}
         topSimilar={summary.topSimilar}
       />
-
     </div>
   );
 }
@@ -1353,9 +1517,11 @@ function SideBySidePairCard({
   const [expanded, setExpanded] = useState(defaultExpanded);
   // Default to the highest-scoring page type
   const bestPageType = pair.pageScores
-    ?.sort((a, b) => b.score - a.score)[0]?.pageType || "about_page";
+    ? [...pair.pageScores].sort((a, b) => b.score - a.score)[0]?.pageType || DataPointKey.ABOUT_PAGE
+    : DataPointKey.ABOUT_PAGE;
   const [activePageType, setActivePageType] = useState(bestPageType);
 
+  const targetUrl = pair.domainAId === targetDomainId ? pair.domainAUrl : pair.domainBUrl;
   const otherUrl = pair.domainAId === targetDomainId ? pair.domainBUrl : pair.domainAUrl;
   const otherDomainId = pair.domainAId === targetDomainId ? pair.domainBId : pair.domainAId;
   const domA = domainMap.get(pair.domainAUrl);
@@ -1363,7 +1529,7 @@ function SideBySidePairCard({
 
   const getPageText = (dom: DomainText | undefined, pageKey: string) => {
     if (!dom) return "";
-    if (pageKey === "about_page") return dom.aboutText || "";
+    if (pageKey === DataPointKey.ABOUT_PAGE) return dom.aboutText || "";
     const pt = dom.pageTexts?.find((p) => p.key === pageKey);
     return pt?.text || "";
   };
@@ -1373,7 +1539,7 @@ function SideBySidePairCard({
 
   const getPageUrl = (dom: DomainText | undefined, pageKey: string): string | undefined => {
     if (!dom) return undefined;
-    if (pageKey === "about_page") return dom.aboutPageUrl || undefined;
+    if (pageKey === DataPointKey.ABOUT_PAGE) return dom.aboutPageUrl || undefined;
     return dom.pageTexts?.find((p) => p.key === pageKey)?.pageUrl;
   };
   const pageUrlA = getPageUrl(domA, activePageType);
@@ -1382,9 +1548,9 @@ function SideBySidePairCard({
   const availablePageTypes = useMemo(() => {
     if (!domA?.pageTexts || !domB?.pageTexts) return [];
     const keysA = new Set(domA.pageTexts.map((p) => p.key));
-    if (domA.aboutText) keysA.add("about_page");
+    if (domA.aboutText) keysA.add(DataPointKey.ABOUT_PAGE);
     const keysB = new Set(domB.pageTexts.map((p) => p.key));
-    if (domB.aboutText) keysB.add("about_page");
+    if (domB.aboutText) keysB.add(DataPointKey.ABOUT_PAGE);
     const PAGE_LABELS: Record<string, string> = {
       homepage_text: "Homepage", about_page: "About Us", contact_page: "Contact Us",
       privacy_page: "Privacy Policy", refund_page: "Refund Policy", terms_page: "Terms of Service",
@@ -1434,6 +1600,17 @@ function SideBySidePairCard({
           ) : (
             <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
           )}
+          <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400 flex-shrink-0" />
+          <a
+            href={`https://${targetUrl}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="text-sm font-medium truncate text-teal-700 dark:text-teal-300 hover:text-teal-900 hover:underline transition-colors"
+          >
+            {targetUrl}
+          </a>
+          <ArrowRight className="h-3 w-3 text-muted-foreground/50 flex-shrink-0" />
           <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400 flex-shrink-0" />
           <a
             href={`https://${otherUrl}`}
@@ -1787,11 +1964,60 @@ function SideBySideSubView({
     [pairs]
   );
 
-  const [visibleCount, setVisibleCount] = useState(5);
-  const visiblePairs = relevantPairs.slice(0, visibleCount);
-  const remainingCount = relevantPairs.length - visibleCount;
+  // Cluster pairs using union-find
+  const clusteredPairs = useMemo(() => {
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      if (!parent.has(x)) parent.set(x, x);
+      if (parent.get(x) !== x) parent.set(x, find(parent.get(x)!));
+      return parent.get(x)!;
+    };
+    const union = (a: string, b: string) => { parent.set(find(a), find(b)); };
+
+    for (const p of relevantPairs) {
+      union(p.domainAId, p.domainBId);
+    }
+
+    // Group pairs by cluster root
+    const groups = new Map<string, PairData[]>();
+    for (const p of relevantPairs) {
+      const root = find(p.domainAId);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root)!.push(p);
+    }
+
+    // Collect member URLs per cluster for display
+    return [...groups.entries()]
+      .map(([root, clusterPairs]) => {
+        const urls = new Set<string>();
+        for (const p of clusterPairs) { urls.add(p.domainAUrl); urls.add(p.domainBUrl); }
+        const avgScore = Math.round(clusterPairs.reduce((s, p) => s + p.compositeScore, 0) / clusterPairs.length);
+        return {
+          root,
+          pairs: clusterPairs.sort((a, b) => b.compositeScore - a.compositeScore),
+          memberCount: urls.size,
+          avgScore,
+        };
+      })
+      .sort((a, b) => b.memberCount - a.memberCount || b.avgScore - a.avgScore);
+  }, [relevantPairs]);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const filteredClusters = useMemo(() => {
+    if (!searchQuery.trim()) return clusteredPairs;
+    const q = searchQuery.toLowerCase();
+    return clusteredPairs
+      .map((c) => ({
+        ...c,
+        pairs: c.pairs.filter(
+          (p) => p.domainAUrl.toLowerCase().includes(q) || p.domainBUrl.toLowerCase().includes(q)
+        ),
+      }))
+      .filter((c) => c.pairs.length > 0);
+  }, [clusteredPairs, searchQuery]);
 
   const [expandOverride, setExpandOverride] = useState<{ expanded: boolean; gen: number } | null>(null);
+  const [collapsedClusters, setCollapsedClusters] = useState<Set<string>>(new Set());
 
   if (relevantPairs.length === 0) {
     return (
@@ -1805,11 +2031,20 @@ function SideBySideSubView({
 
   const totalShared = relevantPairs.reduce((s, p) => s + p.sharedSentenceCount, 0);
   const avgSimilarity = Math.round(relevantPairs.reduce((s, p) => s + p.compositeScore, 0) / relevantPairs.length);
+  const uniqueUrls = useMemo(() => {
+    const urls = new Set<string>();
+    for (const p of relevantPairs) { urls.add(p.domainAUrl); urls.add(p.domainBUrl); }
+    return urls.size;
+  }, [relevantPairs]);
 
   return (
     <div className="space-y-4">
       {/* Stats */}
       <div className="flex items-stretch gap-3 flex-wrap">
+        <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
+          <StatLabel label="Unique Domains" tooltip="Number of unique domains involved in similarity pairs" />
+          <p className="stat-card-value">{uniqueUrls}</p>
+        </div>
         <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
           <StatLabel label="Comparable Pairs" tooltip="Domain pairs with shared sentences or similarity above 40%" />
           <p className="stat-card-value">{relevantPairs.length}</p>
@@ -1830,10 +2065,19 @@ function SideBySideSubView({
 
       {/* Toolbar */}
       {relevantPairs.length > 1 && (
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
-            {visiblePairs.length} of {relevantPairs.length} pairs
-          </span>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <input
+              type="text"
+              placeholder="Search domains..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="text-xs border rounded-md px-2.5 py-1.5 w-48 bg-background placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+            <span className="text-xs text-muted-foreground">
+              {filteredClusters.reduce((s, c) => s + c.pairs.length, 0)} pairs in {filteredClusters.length} {filteredClusters.length === 1 ? "cluster" : "clusters"}
+            </span>
+          </div>
           <button
             onClick={() => setExpandOverride((prev) => ({
               expanded: prev ? !prev.expanded : false,
@@ -1847,44 +2091,49 @@ function SideBySideSubView({
         </div>
       )}
 
-      {/* Pair cards */}
-      <div className="space-y-3 overflow-y-auto overscroll-contain pr-1" style={{ maxHeight: "800px" }}>
-        {visiblePairs.map((pair, idx) => {
-          const defaultExpanded = expandOverride != null ? expandOverride.expanded : idx === 0;
+      {/* Cluster-grouped pair cards */}
+      <div className="space-y-6 overflow-y-auto overscroll-contain pr-1" style={{ maxHeight: "900px" }}>
+        {filteredClusters.map((cluster, ci) => {
+          const isCollapsed = collapsedClusters.has(cluster.root);
           return (
-            <SideBySidePairCard
-              key={`${pair.id}-${expandOverride?.gen ?? "init"}`}
-              pair={pair}
-              domainMap={domainMap}
-              targetDomainId={targetDomainId}
-              defaultExpanded={defaultExpanded}
-            />
-          );
-        })}
-
-        {remainingCount > 0 && (
-          <div className="px-4 py-2.5 flex items-center justify-between bg-muted/20 rounded-lg border">
-            <span className="text-xs text-muted-foreground">
-              Showing {visiblePairs.length} of {relevantPairs.length} pairs
-            </span>
-            <div className="flex items-center gap-2">
+            <div key={cluster.root} className="space-y-2">
+              {/* Cluster header */}
               <button
-                onClick={() => setVisibleCount((prev) => Math.min(prev + 5, relevantPairs.length))}
-                className="text-xs font-medium text-primary hover:text-primary/80 transition-colors px-2 py-1 rounded hover:bg-primary/5"
+                onClick={() => setCollapsedClusters((prev) => {
+                  const next = new Set(prev);
+                  next.has(cluster.root) ? next.delete(cluster.root) : next.add(cluster.root);
+                  return next;
+                })}
+                className="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors"
               >
-                Show {Math.min(5, remainingCount)} more
+                <ChevronDown className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${isCollapsed ? "-rotate-90" : ""}`} />
+                <span className="text-xs font-semibold text-foreground">Cluster {ci + 1}</span>
+                <span className="text-[10px] text-muted-foreground">{cluster.memberCount} sites · {cluster.pairs.length} pairs</span>
+                <span className={`ml-auto text-xs font-bold tabular-nums ${getScoreTextColor(cluster.avgScore)}`}>
+                  avg {cluster.avgScore}
+                </span>
               </button>
-              {remainingCount > 5 && (
-                <button
-                  onClick={() => setVisibleCount(relevantPairs.length)}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-muted/50"
-                >
-                  Show all
-                </button>
+
+              {/* Pairs within cluster */}
+              {!isCollapsed && (
+                <div className="space-y-2 pl-2">
+                  {cluster.pairs.map((pair, idx) => {
+                    const defaultExpanded = expandOverride != null ? expandOverride.expanded : (ci === 0 && idx === 0);
+                    return (
+                      <SideBySidePairCard
+                        key={`${pair.id}-${expandOverride?.gen ?? "init"}`}
+                        pair={pair}
+                        domainMap={domainMap}
+                        targetDomainId={targetDomainId}
+                        defaultExpanded={defaultExpanded}
+                      />
+                    );
+                  })}
+                </div>
               )}
             </div>
-          </div>
-        )}
+          );
+        })}
       </div>
     </div>
   );
@@ -1892,7 +2141,7 @@ function SideBySideSubView({
 
 // -- Content Similarity Tab wrapper with sub-tabs --
 
-function ContentSimilarityTab({
+export function ContentSimilarityTab({
   pairs,
   domainTexts,
   targetDomainId,
@@ -1911,17 +2160,9 @@ function ContentSimilarityTab({
   ).length;
 
   const SUBTABS = useMemo(() => [
-    {
-      key: "sidebyside",
-      label: "Side-by-Side",
-      badge: relevantPairCount > 0 ? relevantPairCount : undefined,
-    },
-    {
-      key: "shared",
-      label: "Shared Sentences",
-      badge: totalShared > 0 ? totalShared : undefined,
-    },
-  ], [totalShared, relevantPairCount]);
+    { key: "sidebyside", label: "Side-by-Side" },
+    { key: "shared", label: "Shared Sentences" },
+  ], []);
 
   return (
     <Tabs
@@ -1952,53 +2193,73 @@ function ContentSimilarityTab({
 // Uniqueness Check Tab
 // =============================================================================
 
-function UniquenessCheckTab({
+export function UniquenessCheckTab({
   domainId,
   domainUrl,
   domainTexts,
+  scanAllDomains = false,
 }: {
   domainId: string;
   domainUrl: string;
   domainTexts: DomainText[];
+  /** When true, scans all domains (for investigations). When false, scans only the target domain. */
+  scanAllDomains?: boolean;
 }) {
-  const targetDomain = domainTexts.find((d) => d.domainId === domainId);
+  // Scan page texts for scam keywords — per domain so we can show which domain flagged
+  const perDomainExcerpts: { domainId: string; url: string; sentence: string; keyword: string }[] = [];
 
-  // Scan all page texts (about, homepage, policies, etc.) for scam keywords
-  const excerpts: { sentence: string; keyword: string }[] = [];
-  const allTexts: string[] = [];
-  if (targetDomain?.aboutText) allTexts.push(targetDomain.aboutText);
-  for (const pt of targetDomain?.pageTexts || []) {
-    if (pt.text) allTexts.push(pt.text);
-  }
+  const domainsToScan = scanAllDomains
+    ? domainTexts
+    : domainTexts.filter((d) => d.domainId === domainId);
 
-  for (const rawText of allTexts) {
-    const cleaned = cleanAboutText(rawText);
-    const sentences = cleaned
-      .split(/(?<=[.!?])\s+|\n+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 10);
+  for (const dt of domainsToScan) {
+    const allTexts: string[] = [];
+    if (dt.aboutText) allTexts.push(dt.aboutText);
+    for (const pt of dt.pageTexts || []) {
+      if (pt.text) allTexts.push(pt.text);
+    }
 
-    for (const sentence of sentences) {
-      const lower = sentence.toLowerCase();
-      for (const keyword of SCAM_KEYWORDS) {
-        const regex = new RegExp(`\\b${keyword}\\b`, "i");
-        if (regex.test(lower)) {
-          if (!excerpts.some((e) => e.sentence === sentence)) {
-            excerpts.push({ sentence, keyword });
+    for (const rawText of allTexts) {
+      const cleaned = cleanAboutText(rawText);
+      const sentences = cleaned
+        .split(/(?<=[.!?])\s+|\n+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 10);
+
+      for (const sentence of sentences) {
+        const lower = sentence.toLowerCase();
+        for (const keyword of SCAM_KEYWORDS) {
+          const regex = new RegExp(`\\b${keyword}\\b`, "i");
+          if (regex.test(lower)) {
+            if (!perDomainExcerpts.some((e) => e.sentence === sentence && e.domainId === dt.domainId)) {
+              perDomainExcerpts.push({ domainId: dt.domainId, url: dt.url, sentence, keyword });
+            }
           }
         }
       }
     }
   }
 
+  // Deduplicated excerpts for backward-compatible count
+  const excerpts = perDomainExcerpts.map((e) => ({ sentence: e.sentence, keyword: e.keyword }));
   const isFlagged = excerpts.length > 0;
+
+  // Group by domain for multi-domain display
+  const groupedByDomain = new Map<string, { url: string; excerpts: { sentence: string; keyword: string }[] }>();
+  for (const e of perDomainExcerpts) {
+    if (!groupedByDomain.has(e.domainId)) {
+      groupedByDomain.set(e.domainId, { url: e.url, excerpts: [] });
+    }
+    groupedByDomain.get(e.domainId)!.excerpts.push({ sentence: e.sentence, keyword: e.keyword });
+  }
+  const flaggedDomainCount = groupedByDomain.size;
 
   return (
     <div className="space-y-4">
       {/* Stats */}
       <div className="flex items-stretch gap-3 flex-wrap">
         <div className={`stat-card flex-1 min-w-[140px] border-l-4 ${isFlagged ? "border-l-orange-500" : "border-l-success"}`}>
-          <StatLabel label="Status" tooltip="Whether this domain's About page contains uniqueness-related keywords" />
+          <StatLabel label="Status" tooltip="Whether page texts contain uniqueness-related keywords" />
           <p className={`stat-card-value ${isFlagged ? "text-orange-600" : "text-success"}`}>
             {isFlagged ? "Flagged" : "Clean"}
           </p>
@@ -2007,10 +2268,44 @@ function UniquenessCheckTab({
           <StatLabel label="Keyword Hits" tooltip={`Sentences containing: ${SCAM_KEYWORDS.map((k) => `"${k}"`).join(", ")}`} />
           <p className="stat-card-value">{excerpts.length}</p>
         </div>
+        {scanAllDomains && (
+          <div className="stat-card flex-1 min-w-[140px] border-l-4 border-l-transparent">
+            <StatLabel label="Flagged Domains" tooltip="Number of domains with uniqueness keyword hits" />
+            <p className={`stat-card-value ${flaggedDomainCount > 0 ? "text-orange-600" : ""}`}>{flaggedDomainCount} / {domainsToScan.length}</p>
+          </div>
+        )}
       </div>
 
-      {/* Flagged excerpts */}
-      {isFlagged && (
+      {/* Flagged excerpts — per domain when scanAllDomains, single domain otherwise */}
+      {isFlagged && scanAllDomains ? (
+        <div className="space-y-3">
+          {Array.from(groupedByDomain.entries()).map(([dId, group]) => (
+            <div key={dId} className="rounded-lg border overflow-hidden">
+              <div className="px-4 py-3 bg-muted/30 border-b flex items-center gap-2">
+                <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
+                <a href={`https://${group.url}`} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-teal-700 dark:text-teal-300 hover:underline">{group.url}</a>
+                <Badge variant="secondary" className="text-[10px]">
+                  {group.excerpts.length} {group.excerpts.length === 1 ? "hit" : "hits"}
+                </Badge>
+              </div>
+              <div className="divide-y divide-border/50">
+                {group.excerpts.map((excerpt, i) => (
+                  <div key={i} className="px-4 py-3 flex gap-3 hover:bg-muted/20 transition-colors">
+                    <span className="text-[10px] font-mono tabular-nums text-muted-foreground/60 pt-0.5 w-5 text-right flex-shrink-0 select-none">
+                      {i + 1}
+                    </span>
+                    <p className="text-sm text-foreground/90 leading-relaxed flex-1">
+                      <span className="text-muted-foreground/40 select-none">&ldquo;</span>
+                      <HighlightedKeywordText text={excerpt.sentence} keywords={SCAM_KEYWORDS} />
+                      <span className="text-muted-foreground/40 select-none">&rdquo;</span>
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : isFlagged ? (
         <div className="rounded-lg border overflow-hidden">
           <div className="px-4 py-3 bg-muted/30 border-b flex items-center gap-2">
             <Globe className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
@@ -2034,7 +2329,7 @@ function UniquenessCheckTab({
             ))}
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Clean state */}
       {!isFlagged && (
@@ -2044,7 +2339,10 @@ function UniquenessCheckTab({
           </div>
           <p className="font-medium text-foreground">No scam markers detected</p>
           <p className="text-sm mt-1">
-            The About page does not contain known uniqueness-related keywords.
+            {scanAllDomains
+              ? `None of the ${domainsToScan.length} domains contain known uniqueness-related keywords.`
+              : "The About page does not contain known uniqueness-related keywords."
+            }
           </p>
         </div>
       )}

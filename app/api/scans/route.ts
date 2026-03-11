@@ -1,4 +1,5 @@
-import { NextResponse, after } from "next/server";
+import { NextResponse } from "next/server";
+import { runInBackground } from "@/lib/runInBackground";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import {
@@ -7,9 +8,10 @@ import {
   generateDomainHash,
 } from "@/lib/utils";
 import { processScanWrapper } from "@/lib/scan-processor";
+import { SCAN_LIST_DATA_POINT_KEYS } from "@/lib/constants";
 
 // Allow up to 5 minutes for scan processing (requires Vercel Pro or self-hosted)
-export const maxDuration = 300;
+export const maxDuration = 600;
 
 const createScanSchema = z.object({
   url: z.string().url("Invalid URL format"),
@@ -109,14 +111,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ id: domainId, scanId: scan.id, status: "completed" }, { status: 201 });
     }
 
-    // Background processing - return immediately in both dev and prod
-    if (process.env.NODE_ENV !== 'development') {
-      // Production: use Next.js after() to keep serverless function alive
-      after(runProcessing);
-    } else {
-      // Dev: fire-and-forget (Node process is long-lived in dev)
-      void runProcessing();
-    }
+    runInBackground(runProcessing);
 
     return NextResponse.json(
       { id: domainId, scanId: scan.id, status: "pending" },
@@ -185,7 +180,14 @@ export async function GET(request: Request) {
     }
 
     const includeFields = {
-      dataPoints: true,
+      dataPoints: {
+        where: {
+          key: {
+            in: [...SCAN_LIST_DATA_POINT_KEYS],
+          },
+        },
+        select: { id: true, key: true, label: true, value: true },
+      },
       _count: {
         select: { screenshots: true },
       },

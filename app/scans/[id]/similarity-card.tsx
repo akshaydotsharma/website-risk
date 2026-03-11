@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
-import { SimilarityTabs } from "./similarity-tabs";
+import { DataPointKey, PAGE_TEXT_KEYS } from "@/lib/constants";
+import { safeJsonParse } from "@/lib/utils";
+import { SimilarityTabs } from "@/components/similarity/similarity-tabs";
 
 interface SimilaritySummary {
   similarCount: number;
@@ -19,7 +21,7 @@ interface SimilaritySummary {
   analyzedAt: string;
 }
 
-const PAGE_KEYS = ["homepage_text", "about_page", "contact_page", "privacy_page", "refund_page", "terms_page"];
+const PAGE_KEYS = [...PAGE_TEXT_KEYS];
 const PAGE_LABELS: Record<string, string> = {
   homepage_text: "Homepage",
   about_page: "About Us",
@@ -151,7 +153,7 @@ export async function SimilarityCard({ domainId, domainUrl }: { domainId: string
         if (text) {
           pageTexts.push({ key: dp.key, label: PAGE_LABELS[dp.key] || dp.key, text, pageUrl: pageUrl || undefined });
         }
-        if (dp.key === "about_page") {
+        if (dp.key === DataPointKey.ABOUT_PAGE) {
           aboutText = text;
           aboutPageUrl = parsed.about_page_url || null;
         }
@@ -171,11 +173,11 @@ export async function SimilarityCard({ domainId, domainUrl }: { domainId: string
     domainAUrl: p.domainAUrl,
     domainBUrl: p.domainBUrl,
     compositeScore: p.compositeScore,
-    sharedSentences: p.sharedSentences ? JSON.parse(p.sharedSentences) : [],
+    sharedSentences: safeJsonParse(p.sharedSentences, []),
     sharedSentenceCount: p.sharedSentenceCount,
-    pageScores: p.pageScores ? JSON.parse(p.pageScores) : [],
-    keywordHitsA: p.keywordHitsA ? JSON.parse(p.keywordHitsA) : [],
-    keywordHitsB: p.keywordHitsB ? JSON.parse(p.keywordHitsB) : [],
+    pageScores: safeJsonParse(p.pageScores, []),
+    keywordHitsA: safeJsonParse(p.keywordHitsA, []),
+    keywordHitsB: safeJsonParse(p.keywordHitsB, []),
   });
 
   const serializedPairs = pairs.map(serializePair);

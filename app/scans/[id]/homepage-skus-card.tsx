@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -79,7 +79,6 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
   const [loading, setLoading] = useState(true);
   const [extracting, setExtracting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [scanStatus, setScanStatus] = useState(initialScanStatus);
 
   // Filter state
   const [search, setSearch] = useState("");
@@ -130,31 +129,15 @@ export function HomepageSkusCard({ domainId, initialScanStatus }: HomepageSkusCa
     fetchData();
   }, [fetchData]);
 
-  // Poll for data while scan is processing
+  // Re-fetch when scan completes (ScanStatusRefresher triggers router.refresh())
+  const prevStatusRef = useRef(initialScanStatus);
   useEffect(() => {
-    const isScanning = scanStatus === "pending" || scanStatus === "processing";
-    if (!isScanning) return;
-
-    const pollInterval = setInterval(async () => {
-      // Check scan status
-      try {
-        const statusResponse = await fetch(`/api/scans/${domainId}/status`);
-        if (statusResponse.ok) {
-          const statusData = await statusResponse.json();
-          setScanStatus(statusData.status);
-
-          // If scan completed, fetch data one more time
-          if (statusData.status === "completed" || statusData.status === "failed") {
-            fetchData();
-          }
-        }
-      } catch {
-        // Ignore polling errors
-      }
-    }, 2000);
-
-    return () => clearInterval(pollInterval);
-  }, [domainId, scanStatus, fetchData]);
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = initialScanStatus;
+    const wasScanning = prev === "pending" || prev === "processing";
+    const nowDone = initialScanStatus === "completed" || initialScanStatus === "failed";
+    if (wasScanning && nowDone) fetchData();
+  }, [initialScanStatus, fetchData]);
 
   // Debounce search
   useEffect(() => {

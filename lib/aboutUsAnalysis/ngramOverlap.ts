@@ -64,13 +64,30 @@ export function computePairwiseNgramScores(
   const ids = Array.from(documents.keys()).sort();
   const scores = new Map<string, number>();
 
+  // Pre-cache tokenized n-gram sets to avoid re-tokenizing per pair
+  const trigramCache = new Map<string, Set<string>>();
+  const quadgramCache = new Map<string, Set<string>>();
+  for (const id of ids) {
+    const tokens = tokenize(documents.get(id)!);
+    trigramCache.set(id, tokens.length >= 3 ? extractNgrams(tokens, 3) : new Set());
+    quadgramCache.set(id, tokens.length >= 4 ? extractNgrams(tokens, 4) : new Set());
+  }
+
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
-      const score = computeNgramOverlap(
-        documents.get(ids[i])!,
-        documents.get(ids[j])!
-      );
-      scores.set(`${ids[i]}|${ids[j]}`, score);
+      const triA = trigramCache.get(ids[i])!;
+      const triB = trigramCache.get(ids[j])!;
+      const quadA = quadgramCache.get(ids[i])!;
+      const quadB = quadgramCache.get(ids[j])!;
+
+      if (triA.size === 0 || triB.size === 0 || quadA.size === 0 || quadB.size === 0) {
+        scores.set(`${ids[i]}|${ids[j]}`, 0);
+        continue;
+      }
+
+      const trigramScore = jaccardSimilarity(triA, triB);
+      const quadgramScore = jaccardSimilarity(quadA, quadB);
+      scores.set(`${ids[i]}|${ids[j]}`, Math.round(trigramScore * 0.4 + quadgramScore * 0.6));
     }
   }
 

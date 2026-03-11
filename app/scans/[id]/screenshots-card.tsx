@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Card,
   CardContent,
@@ -76,7 +76,6 @@ export function ScreenshotsCard({
   const [loading, setLoading] = useState(true);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [scanStatus, setScanStatus] = useState(initialScanStatus);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 2;
@@ -99,35 +98,15 @@ export function ScreenshotsCard({
     fetchScreenshots();
   }, [fetchScreenshots]);
 
-  // Poll while scan is in progress
+  // Re-fetch when scan completes (ScanStatusRefresher triggers router.refresh())
+  const prevStatusRef = useRef(initialScanStatus);
   useEffect(() => {
-    const isScanning =
-      scanStatus === "pending" || scanStatus === "processing";
-    if (!isScanning) return;
-
-    const pollInterval = setInterval(async () => {
-      try {
-        const statusRes = await fetch(`/api/scans/${domainId}`);
-        if (statusRes.ok) {
-          const statusData = await statusRes.json();
-          const latestScan = statusData.scans?.[0];
-          if (latestScan) {
-            setScanStatus(latestScan.status);
-            if (
-              latestScan.status === "completed" ||
-              latestScan.status === "failed"
-            ) {
-              fetchScreenshots();
-            }
-          }
-        }
-      } catch {
-        // ignore polling errors
-      }
-    }, 3000);
-
-    return () => clearInterval(pollInterval);
-  }, [scanStatus, domainId, fetchScreenshots]);
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = initialScanStatus;
+    const wasScanning = prev === "pending" || prev === "processing";
+    const nowDone = initialScanStatus === "completed" || initialScanStatus === "failed";
+    if (wasScanning && nowDone) fetchScreenshots();
+  }, [initialScanStatus, fetchScreenshots]);
 
   const handleCapture = async () => {
     setCapturing(true);

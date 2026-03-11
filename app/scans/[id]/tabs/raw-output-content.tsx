@@ -7,6 +7,7 @@ import { Accordion, AccordionItem } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { FileText, Globe, ExternalLink, Shield, ReceiptText, Scale, ChevronLeft, ChevronRight } from "lucide-react";
 import { format } from "date-fns";
+import { DataPointKey, PAGE_TEXT_KEYS, PAGE_TEXT_LABELS } from "@/lib/constants";
 
 export function RawOutputContent({
   dataPoints,
@@ -27,16 +28,12 @@ export function RawOutputContent({
     dataPoints: { id: string }[];
   }[];
 }) {
-  const PAGE_TEXT_KEYS = [
-    { key: "homepage_text", label: "Homepage" },
-    { key: "about_page", label: "About Page" },
-    { key: "contact_page", label: "Contact Page" },
-    { key: "privacy_page", label: "Privacy Policy" },
-    { key: "refund_page", label: "Refund Policy" },
-    { key: "terms_page", label: "Terms of Service" },
-  ];
+  const pageTextItems = PAGE_TEXT_KEYS.map((key) => ({
+    key,
+    label: PAGE_TEXT_LABELS[key] || key,
+  }));
 
-  const pageTextEntries = PAGE_TEXT_KEYS
+  const pageTextEntries = pageTextItems
     .map((pt) => {
       const dp = dataPoints.find((d) => d.key === pt.key);
       if (!dp?.value?.text_content) return null;

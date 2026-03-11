@@ -4,11 +4,11 @@ import { computePairwiseNgramScores } from "./aboutUsAnalysis/ngramOverlap";
 import { findSharedSentences } from "./aboutUsAnalysis/sharedSentences";
 import { scanKeywords } from "./aboutUsAnalysis/keywordScan";
 import { PAGE_TEXT_TYPES } from "./aboutUsAnalysis/schemas";
+import { POLICY_PAGE_KEYS } from "@/lib/constants";
 import type { KeywordHit, PageScore } from "./aboutUsAnalysis/schemas";
 
 const PAGE_KEYS = PAGE_TEXT_TYPES.map((t) => t.key);
 const PAGE_LABEL_MAP = new Map(PAGE_TEXT_TYPES.map((t) => [t.key, t.label]));
-const POLICY_PAGE_KEYS = new Set(["terms_page", "privacy_page", "refund_page"]);
 const SENTENCE_BONUS = 2;
 const MAX_SENTENCE_BONUS = 10;
 const MIN_SCORE_TO_STORE = 15; // Only store pairs with meaningful similarity
@@ -21,16 +21,20 @@ const MIN_SCORE_TO_STORE = 15; // Only store pairs with meaningful similarity
  */
 export async function runIncrementalSimilarity(
   domainId: string,
-  normalizedUrl: string
+  normalizedUrl: string,
+  options?: { minScore?: number; onlyAgainstIds?: string[] }
 ): Promise<void> {
   const logPrefix = `[Similarity ${normalizedUrl}]`;
   const startTime = Date.now();
 
   try {
-    // Step 1: Get all other domains that have page text data
+    // Step 1: Get other domains to compare against (limit to 200 most recent when unbounded)
     const allDomains = await prisma.domain.findMany({
-      where: { id: { not: domainId } },
+      where: options?.onlyAgainstIds
+        ? { id: { in: options.onlyAgainstIds.filter((id) => id !== domainId) } }
+        : { id: { not: domainId } },
       select: { id: true, normalizedUrl: true },
+      ...(!options?.onlyAgainstIds && { orderBy: { lastCheckedAt: "desc" as const }, take: 200 }),
     });
 
     if (allDomains.length === 0) {
@@ -82,7 +86,8 @@ export async function runIncrementalSimilarity(
       return;
     }
 
-    console.log(`${logPrefix} Comparing against ${otherDomainsWithText.length} domains...`);
+    const targetPageCount = allPageTexts.get(domainId)?.size || 0;
+    console.log(`${logPrefix} Comparing against ${otherDomainsWithText.length} domains (target has ${targetPageCount} page texts)...`);
 
     // Step 3: Per-page-type analysis
     // For efficiency, we only compute scores for pairs involving our domain
@@ -189,7 +194,7 @@ export async function runIncrementalSimilarity(
       const bonus = Math.min(sharedCount * SENTENCE_BONUS, MAX_SENTENCE_BONUS);
       const finalScore = Math.min(100, data.compositeScore + bonus);
 
-      if (finalScore < MIN_SCORE_TO_STORE) continue;
+      if (finalScore < (options?.minScore ?? MIN_SCORE_TO_STORE)) continue;
 
       // Get keyword hits for the other domain
       const otherId = idA === domainId ? idB : idA;
@@ -216,7 +221,12 @@ export async function runIncrementalSimilarity(
     }
 
     // Step 6: Upsert pairs to DB (batch)
-    console.log(`${logPrefix} Storing ${pairsToStore.length} similarity pairs (score >= ${MIN_SCORE_TO_STORE})...`);
+    const effectiveMin = options?.minScore ?? MIN_SCORE_TO_STORE;
+    console.log(`${logPrefix} Storing ${pairsToStore.length} similarity pairs (score >= ${effectiveMin})${options?.onlyAgainstIds ? ` [scoped to ${options.onlyAgainstIds.length} domains]` : ""}...`);
+    if (pairsToStore.length > 0) {
+      const topScores = pairsToStore.slice(0, 5).map((p) => `${urlMap.get(p.domainBId) || p.domainBId}:${p.compositeScore}`);
+      console.log(`${logPrefix} Top pairs: ${topScores.join(", ")}`);
+    }
 
     const BATCH_SIZE = 50;
     for (let i = 0; i < pairsToStore.length; i += BATCH_SIZE) {

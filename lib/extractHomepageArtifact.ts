@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { normalizeUrl, extractDomain } from "@/lib/utils";
+import { normalizeUrl, extractDomain, safeJsonParse } from "@/lib/utils";
+import { sslTolerantDispatcher } from "@/lib/ssl-fetch";
 import { findAboutLinksWithBrowser, fetchWithBrowser, closeBrowser } from "@/lib/browser";
 
 // ---------------------------------------------------------------------------
@@ -91,8 +92,8 @@ interface AuthorizationResult {
 // Default crawling configuration
 const DEFAULT_AUTH_CONFIG = {
   allowSubdomains: true,
-  respectRobots: true,
-  allowRobotsDisallowed: false,
+  respectRobots: false,
+  allowRobotsDisallowed: true,
 };
 
 async function checkDomainAuthorization(
@@ -177,6 +178,8 @@ async function checkRobotsTxt(
     const response = await fetch(robotsUrl, {
       signal: controller.signal,
       headers: { "User-Agent": DEFAULT_USER_AGENT },
+      // @ts-expect-error -- Node 20+ supports undici dispatcher
+      dispatcher: sslTolerantDispatcher,
     });
 
     clearTimeout(timeoutId);
@@ -369,6 +372,8 @@ export function extractReadableText(html: string): string {
     .replace(/&apos;/gi, "'")
     .replace(/&ndash;/gi, "\u2013")
     .replace(/&mdash;/gi, "\u2014")
+    .replace(/&times;/gi, "×")
+    .replace(/&[a-z]+;/gi, "") // remove remaining named entities
     .replace(/&#\d+;/gi, "");
 
   // Remove Unicode Private Use Area characters (icon fonts rendered as text)
@@ -393,6 +398,28 @@ export function extractReadableText(html: string): string {
     // Drop very short lines that look like UI chrome (< 3 chars, not a real word)
     if (line.length < 3 && !/\w{2,}/.test(line)) return false;
 
+    // Drop HTML comment artifacts
+    if (/^-{2,}>/.test(line)) return false;
+
+    // Drop standalone close/dismiss buttons
+    if (/^[×✕✖✗✘xX]$/.test(line) || /^&times;$/.test(line)) return false;
+
+    // Drop auth/account UI chrome (login, register, password reset)
+    const lineLower = line.toLowerCase();
+    if (/^(sign in|log ?in|register|create an? account|forgot (your )?password\??)$/i.test(line)) return false;
+    if (/^(sign in or register|login with your|log ?in with|sign in with)/.test(lineLower)) return false;
+    if (/^(new here\??|already have an account\??)$/i.test(line)) return false;
+
+    // Drop registration/account promo lines (short, < 40 chars)
+    if (line.length < 40 && /^(registration is |faster checkout|save multiple |view and track |create an account)/i.test(line)) return false;
+
+    // Drop cart/basket notification toasts
+    if (/added to (cart|bag|basket|wishlist)/i.test(lineLower) && line.length < 60) return false;
+    if (/^(your (shopping )?cart is empty|0 item)/i.test(line)) return false;
+
+    // Drop standalone form buttons
+    if (/^(submit|send message|send|reset)$/i.test(line)) return false;
+
     // Drop lines containing raw HTML attributes (malformed/unclosed tags leaking through)
     if (/data-\w+=["']/.test(line) || /\bclass=["']/.test(line) || /\bstyle=["']/.test(line)) return false;
     if (/^<\w/.test(line)) return false; // lines starting with an unclosed HTML tag
@@ -400,7 +427,10 @@ export function extractReadableText(html: string): string {
     // Drop lines that look like JavaScript code (web components, inline scripts)
     if (/^(const |let |var |function |class |import |export |return\b|if\s*\(|else\s*\{|for\s*\(|while\s*\(|switch\s*\(|try\s*\{|catch\s*\(|async |await |this\.|window\.|document\.|new |typeof |super\()/.test(line)) return false;
     if (/^[{}()\[\];]+$/.test(line)) return false; // lone braces/brackets
-    if (/^\w+\s*[:=]\s*(?:function|async|\(|{|\[|true|false|null|undefined|'|"|`|\d)/.test(line)) return false;
+    // JS property/variable assignments like "count: 5", "x = [1,2]"
+    // But NOT contact fields like "Phone: 436337233" or "Fax: 12345"
+    if (/^\w+\s*[:=]\s*(?:function|async|\(|{|\[|true|false|null|undefined|'|"|`)/.test(line)) return false;
+    if (/^\w+\s*[:=]\s*\d/.test(line) && !/^(phone|fax|tel|mobile|zip|code|price|qty|quantity|hours?|year|age|id|no\.?|number)/i.test(line)) return false;
     if (/^(?:constructor|buildCallback|mountCallback|isLayoutSupported|static |get |set )\w*\s*\(/.test(line)) return false;
     if (/\.\w+\s*=\s*(?:function|\(|{|\[|true|false|null|undefined|'|"|`)/.test(line) && line.length < 120 && !/[.!?]$/.test(line)) return false;
     // Lines ending with { or ; that contain typical code patterns
@@ -411,18 +441,15 @@ export function extractReadableText(html: string): string {
     return true;
   });
 
-  // Deduplicate all identical lines (not just consecutive).
-  // Promotional banners, marquees, and repeated blocks often appear 3-4x.
-  const seen = new Set<string>();
+  // Deduplicate CONSECUTIVE identical lines only (catches marquee/banner repeats).
+  // Full deduplication is done AFTER structural trimming (header/footer cuts) to avoid
+  // losing body content that also appeared in trimmed header chrome.
   const deduped: string[] = [];
-  for (const line of lines) {
-    if (!line) {
-      deduped.push(line); // keep blank lines for spacing
-      continue;
-    }
-    const key = line.toLowerCase().replace(/\s+/g, " ");
-    if (seen.has(key)) continue;
-    seen.add(key);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) { deduped.push(line); continue; }
+    const prev = i > 0 ? lines[i - 1] : null;
+    if (prev && line.toLowerCase().replace(/\s+/g, " ") === prev.toLowerCase().replace(/\s+/g, " ")) continue;
     deduped.push(line);
   }
 
@@ -457,11 +484,14 @@ export function extractReadableText(html: string): string {
     }
 
     // If we found substantive content and there are >= 3 short nav-like lines
-    // before it, trim the leading chrome.
+    // before it, trim the leading chrome. But don't trim if it would remove
+    // most of the content (e.g. contact pages with short address/form lines).
+    const totalNonBlank = deduped.filter(l => l.length > 0).length;
     if (
       firstSubstantiveIdx > 0 &&
       nonBlankBeforeFirst >= 3 &&
-      shortBeforeFirst / nonBlankBeforeFirst >= 0.6
+      shortBeforeFirst / nonBlankBeforeFirst >= 0.6 &&
+      nonBlankBeforeFirst / totalNonBlank < 0.8 // Don't trim if it would remove >80% of content
     ) {
       headerCutIndex = firstSubstantiveIdx;
     }
@@ -511,9 +541,10 @@ export function extractReadableText(html: string): string {
 
     let densityCut = afterHeaderTrim.length;
 
-    // Only run density detection if the body itself has paragraphs.
-    // If body is mostly short labels (< 0.15), it's a bullet-point page — skip.
-    if (bodyDensity >= 0.15) {
+    // Only run density detection if the body has substantial prose.
+    // Pages with mostly short lines (contact info, bullet lists, address blocks)
+    // get misidentified as "footer chrome". Skip for these pages.
+    if (bodyDensity >= 0.30) {
       // Threshold: density must exceed this to count as "body".
       // At minimum, require 2 substantive lines per window (not just 1 stray line).
       const threshold = Math.max(bodyDensity * 0.3, (2 - 0.5) / W);
@@ -564,7 +595,23 @@ export function extractReadableText(html: string): string {
 
   const trimmed = afterHeaderTrim.slice(0, footerCutIndex);
 
-  let result = trimmed.join("\n");
+  // Deduplicate all identical lines (not just consecutive).
+  // Done after structural trimming so body lines that also appeared in
+  // header/footer chrome are preserved.
+  const seen = new Set<string>();
+  const dedupedFinal: string[] = [];
+  for (const line of trimmed) {
+    if (!line) {
+      dedupedFinal.push(line);
+      continue;
+    }
+    const key = line.toLowerCase().replace(/\s+/g, " ");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    dedupedFinal.push(line);
+  }
+
+  let result = dedupedFinal.join("\n");
 
   // Collapse 3+ consecutive newlines into 2 (paragraph break)
   result = result.replace(/\n{3,}/g, "\n\n");
@@ -788,6 +835,8 @@ export async function extractHomepageArtifact(
           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
       },
+      // @ts-expect-error -- Node 20+ supports undici dispatcher
+      dispatcher: sslTolerantDispatcher,
     });
 
     clearTimeout(timeoutId);
@@ -857,13 +906,21 @@ export async function extractHomepageArtifact(
   let fetchMethod = "http";
   let activeHtml = html;
 
-  // If blocked by bot challenge or HTTP error (403/503), try headless browser fallback
-  if (features.blocked || (response && !response.ok && [403, 503].includes(response.status))) {
+  // If blocked by bot challenge, HTTP error (403/503), or SPA shell with no real content,
+  // try headless browser fallback
+  // SPA shells have minimal HTML (scripts + empty div#app) that renders via JS.
+  // Some SPA shells are tiny (<3KB), others include meta tags/scripts up to ~10KB.
+  const isSpaShell = features.wordCount < 20 && html.length < 10000 && response.ok;
+  if (features.blocked || isSpaShell || (response && !response.ok && [403, 503].includes(response.status))) {
     try {
+      // Disable expandSections for sub-pages — clicking accordion/toggle elements
+      // on SPA sites can trigger client-side navigation away from the target route.
+      const isSubPage = urlObj.pathname !== "/" && urlObj.pathname !== "";
       const browserResult = await fetchWithBrowser(null, url, "comparison", {
         waitForNetworkIdle: true,
-        additionalWaitMs: 3000,
+        additionalWaitMs: 5000, // SPAs need extra time for route transitions
         timeout: 45000,
+        expandSections: !isSubPage,
       });
 
       if (browserResult.content && browserResult.content.length > 0) {
@@ -892,9 +949,8 @@ export async function extractHomepageArtifact(
       }
     } catch {
       // Browser fallback failed, continue with original HTTP features
-    } finally {
-      await closeBrowser().catch(() => {});
     }
+    // Do NOT close the shared browser here - other concurrent tasks may still need it
   }
 
   // Extract text
@@ -1040,7 +1096,17 @@ export async function getOrCreateArtifact(
     });
 
     if (existingArtifact && existingArtifact.ok) {
-      return parseStoredArtifact(existingArtifact);
+      // Validate cache using extractReadableText (same method buildPageData uses)
+      // The artifact features.wordCount uses less-aggressive stripping and can report
+      // 100+ words for JS-heavy pages where extractReadableText only finds 7 words
+      const cachedHtml = existingArtifact.htmlSnippet as string | null;
+      const readableWordCount = cachedHtml
+        ? extractReadableText(cachedHtml).trim().split(/\s+/).filter((w: string) => w.length > 0).length
+        : 0;
+      if (readableWordCount >= 20) {
+        return parseStoredArtifact(existingArtifact);
+      }
+      // Low word count cached — re-fetch with browser fallback
     }
   }
 
@@ -1088,9 +1154,9 @@ export async function getOrCreateArtifact(
 }
 
 function parseStoredArtifact(record: any): { artifact: ArtifactExtractionResult; artifactId: string } {
-  const features = record.features ? JSON.parse(record.features) : null;
-  const embedding = record.embedding ? JSON.parse(record.embedding) : null;
-  const redirectChain = record.redirectChain ? JSON.parse(record.redirectChain) : [];
+  const features = safeJsonParse(record.features, null);
+  const embedding = safeJsonParse(record.embedding, null);
+  const redirectChain = safeJsonParse(record.redirectChain, []);
 
   return {
     artifactId: record.id,
@@ -1156,6 +1222,8 @@ async function discoverAboutPageUrl(
           "User-Agent": DEFAULT_USER_AGENT,
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
+        // @ts-expect-error -- Node 20+ supports undici dispatcher
+        dispatcher: sslTolerantDispatcher,
       });
 
       clearTimeout(timeoutId);

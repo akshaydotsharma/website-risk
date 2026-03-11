@@ -2,6 +2,8 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { StatusBadge } from "@/components/status-badge";
 import { format } from "date-fns";
+import { PAGE_TEXT_KEYS, DataPointKey } from "@/lib/constants";
+import { safeJsonParse } from "@/lib/utils";
 import { FileSearch, ChevronLeft, Clock, Users } from "lucide-react";
 import Link from "next/link";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
@@ -32,7 +34,7 @@ export default async function AnalysisDetailPage({
     notFound();
   }
 
-  const summary = run.summary ? JSON.parse(run.summary) : null;
+  const summary = run.summary ? safeJsonParse(run.summary, null) : null;
   const isProcessing = run.status === "pending" || run.status === "processing";
 
   const pairs = run.pairs.map((p) => ({
@@ -42,19 +44,19 @@ export default async function AnalysisDetailPage({
     domainAUrl: p.domainAUrl,
     domainBUrl: p.domainBUrl,
     textScore: p.textScore,
-    sharedSentences: p.sharedSentences ? JSON.parse(p.sharedSentences) : [],
+    sharedSentences: safeJsonParse(p.sharedSentences, []),
     sharedSentenceCount: p.sharedSentenceCount,
-    keywordHitsA: p.keywordHitsA ? JSON.parse(p.keywordHitsA) : [],
-    keywordHitsB: p.keywordHitsB ? JSON.parse(p.keywordHitsB) : [],
+    keywordHitsA: safeJsonParse(p.keywordHitsA, []),
+    keywordHitsB: safeJsonParse(p.keywordHitsB, []),
     clusterId: p.clusterId,
     flagged: p.flagged,
-    flagReasons: p.flagReasons ? JSON.parse(p.flagReasons) : [],
-    pageScores: p.pageScores ? JSON.parse(p.pageScores) : [],
+    flagReasons: safeJsonParse(p.flagReasons, []),
+    pageScores: safeJsonParse(p.pageScores, []),
   }));
 
   // Load all page texts per domain
-  const PAGE_KEYS = ["homepage_text", "about_page", "contact_page", "privacy_page", "refund_page", "terms_page"];
-  const domainIds: string[] = JSON.parse(run.domainIds);
+  const PAGE_KEYS = [...PAGE_TEXT_KEYS];
+  const domainIds: string[] = safeJsonParse(run.domainIds, []);
   const [allDataPoints, domains] = await Promise.all([
     prisma.domainDataPoint.findMany({
       where: { domainId: { in: domainIds }, key: { in: PAGE_KEYS } },
@@ -67,7 +69,7 @@ export default async function AnalysisDetailPage({
   ]);
 
   const domainAboutTexts = domains.map((d) => {
-    const aboutDp = allDataPoints.find((a) => a.domainId === d.id && a.key === "about_page");
+    const aboutDp = allDataPoints.find((a) => a.domainId === d.id && a.key === DataPointKey.ABOUT_PAGE);
     let aboutText = "";
     let aboutPageUrl: string | null = null;
     if (aboutDp) {

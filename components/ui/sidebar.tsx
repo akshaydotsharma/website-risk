@@ -7,10 +7,9 @@ import {
   Globe,
   History,
   Settings,
-  Plus,
-  Clock,
   Scan,
   FileSearch,
+  Network,
   X,
 } from "lucide-react";
 import { useState, useEffect } from "react";
@@ -38,18 +37,14 @@ const navItems: NavItem[] = [
     href: "/",
     icon: Scan,
     children: [
-      { label: "Website Scan", href: "/", icon: Globe },
-      { label: "Scan History", href: "/scans", icon: History },
+      { label: "Scan", href: "/", icon: Globe },
+      { label: "Domains", href: "/scans", icon: History },
     ],
   },
   {
-    label: "Website Similarity",
-    href: "/about-analysis",
-    icon: FileSearch,
-    children: [
-      { label: "New Analysis", href: "/about-analysis/new", icon: Plus },
-      { label: "History", href: "/about-analysis", icon: Clock },
-    ],
+    label: "Investigations",
+    href: "/investigations",
+    icon: Network,
   },
   {
     label: "Settings",

@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { getScoreTextColor, getScoreBgColor, getScoreBgColorSubtle, getScoreBorderLeftColor, getRiskLabel, getAiLikelihoodLabel } from "@/lib/utils";
+import { DataPointKey } from "@/lib/constants";
+import { getScoreTextColor, getScoreBgColor, getScoreBgColorSubtle, getScoreBorderLeftColor, getRiskLabel, getAiLikelihoodLabel, safeJsonParse } from "@/lib/utils";
 import { format } from "date-fns";
 import { ExternalLink, Globe, ChevronLeft, Bot, AlertTriangle, ShoppingCart, Calendar, Info } from "lucide-react";
 import Link from "next/link";
@@ -13,6 +14,7 @@ import { InvestigationNotes } from "./investigation-notes";
 import { ScanDetailTabs } from "./scan-detail-tabs";
 import type { TabData } from "./scan-detail-tabs";
 import { SimilarityCard } from "./similarity-card";
+import { ScanStatusRefresher } from "./scan-status-refresher";
 
 export const dynamic = "force-dynamic";
 
@@ -28,14 +30,6 @@ async function getDomainData(id: string) {
         take: 10,
         include: {
           dataPoints: true,
-          crawlFetchLogs: {
-            orderBy: { createdAt: "asc" },
-            take: 100,
-          },
-          signalLogs: {
-            orderBy: { createdAt: "asc" },
-            take: 100,
-          },
         },
       },
       investigationNotes: {
@@ -96,12 +90,28 @@ export default async function ScanDetailPage({
 
   const latestScan = domain.scans[0];
 
+  // Load crawl/signal logs only for the latest scan (not all 10)
+  const [crawlFetchLogs, signalLogs] = latestScan
+    ? await Promise.all([
+        prisma.crawlFetchLog.findMany({
+          where: { scanId: latestScan.id },
+          orderBy: { createdAt: "asc" },
+          take: 100,
+        }),
+        prisma.signalLog.findMany({
+          where: { scanId: latestScan.id },
+          orderBy: { createdAt: "asc" },
+          take: 100,
+        }),
+      ])
+    : [[], []];
+
   // Pre-parse data points for the client component
-  const aiDataPoint = domain.dataPoints.find((dp: any) => dp.key === "ai_generated_likelihood");
-  const riskDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_risk_assessment");
-  const contactDataPoint = domain.dataPoints.find((dp: any) => dp.key === "contact_details");
-  const signalsDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_intel_signals");
-  const aboutPageDataPoint = domain.dataPoints.find((dp: any) => dp.key === "about_page");
+  const aiDataPoint = domain.dataPoints.find((dp: any) => dp.key === DataPointKey.AI_LIKELIHOOD);
+  const riskDataPoint = domain.dataPoints.find((dp: any) => dp.key === DataPointKey.RISK_ASSESSMENT);
+  const contactDataPoint = domain.dataPoints.find((dp: any) => dp.key === DataPointKey.CONTACT_DETAILS);
+  const signalsDataPoint = domain.dataPoints.find((dp: any) => dp.key === DataPointKey.DOMAIN_INTEL_SIGNALS);
+  const aboutPageDataPoint = domain.dataPoints.find((dp: any) => dp.key === DataPointKey.ABOUT_PAGE);
 
   // Fetch counts for tab badges
   const [skuCount, screenshotCount] = await Promise.all([
@@ -116,30 +126,30 @@ export default async function ScanDetailPage({
     screenshotCount,
     ai: aiDataPoint
       ? {
-          data: JSON.parse(aiDataPoint.value),
-          rawOpenAIResponse: JSON.parse(aiDataPoint.rawOpenAIResponse || "{}"),
+          data: safeJsonParse<any>(aiDataPoint.value, null),
+          rawOpenAIResponse: safeJsonParse<any>(aiDataPoint.rawOpenAIResponse, {}),
         }
       : null,
     risk: riskDataPoint
-      ? { data: JSON.parse(riskDataPoint.value) }
+      ? { data: safeJsonParse<any>(riskDataPoint.value, null) }
       : null,
     contact: contactDataPoint
       ? {
-          data: JSON.parse(contactDataPoint.value),
-          sources: JSON.parse(contactDataPoint.sources),
+          data: safeJsonParse<any>(contactDataPoint.value, null),
+          sources: safeJsonParse<any>(contactDataPoint.sources, []),
         }
       : null,
-    aboutPage: aboutPageDataPoint ? JSON.parse(aboutPageDataPoint.value) : null,
-    signals: signalsDataPoint ? JSON.parse(signalsDataPoint.value) : null,
+    aboutPage: aboutPageDataPoint ? safeJsonParse<any>(aboutPageDataPoint.value, null) : null,
+    signals: signalsDataPoint ? safeJsonParse<any>(signalsDataPoint.value, null) : null,
     dataPoints: domain.dataPoints.map((dp: any) => ({
       id: dp.id,
       key: dp.key,
       label: dp.label,
-      value: JSON.parse(dp.value || "{}"),
-      sources: JSON.parse(dp.sources),
-      rawOpenAIResponse: JSON.parse(dp.rawOpenAIResponse || "{}"),
+      value: safeJsonParse<any>(dp.value, {}),
+      sources: safeJsonParse<any>(dp.sources, []),
+      rawOpenAIResponse: safeJsonParse<any>(dp.rawOpenAIResponse, {}),
     })),
-    crawlFetchLogs: (latestScan?.crawlFetchLogs ?? []).map((log: any) => ({
+    crawlFetchLogs: crawlFetchLogs.map((log: any) => ({
       id: log.id,
       url: log.url,
       statusCode: log.statusCode,
@@ -148,7 +158,7 @@ export default async function ScanDetailPage({
       fetchDurationMs: log.fetchDurationMs,
       robotsAllowed: log.robotsAllowed,
     })),
-    signalLogs: (latestScan?.signalLogs ?? []).map((log: any) => ({
+    signalLogs: signalLogs.map((log: any) => ({
       id: log.id,
       category: log.category,
       name: log.name,
@@ -169,6 +179,7 @@ export default async function ScanDetailPage({
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
+      <ScanStatusRefresher domainId={domain.id} initialScanStatus={latestScan?.status ?? null} />
       {/* Sticky Report Header */}
       <div className="sticky top-16 z-20 px-4 sm:px-6 py-4 bg-[hsl(220,14%,97.5%)]/75 backdrop-blur-xl border rounded-xl shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -234,15 +245,15 @@ function SummaryCard({
   domain: any;
   latestScan: any;
 }) {
-  const riskDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_risk_assessment");
-  const aiDataPoint = domain.dataPoints.find((dp: any) => dp.key === "ai_generated_likelihood");
-  const signalsDataPoint = domain.dataPoints.find((dp: any) => dp.key === "domain_intel_signals");
+  const riskDataPoint = domain.dataPoints.find((dp: any) => dp.key === DataPointKey.RISK_ASSESSMENT);
+  const aiDataPoint = domain.dataPoints.find((dp: any) => dp.key === DataPointKey.AI_LIKELIHOOD);
+  const signalsDataPoint = domain.dataPoints.find((dp: any) => dp.key === DataPointKey.DOMAIN_INTEL_SIGNALS);
 
-  const riskData = riskDataPoint ? JSON.parse(riskDataPoint.value) : null;
+  const riskData = riskDataPoint ? safeJsonParse<any>(riskDataPoint.value, null) : null;
   const riskScore = riskData?.overall_risk_score ?? null;
   const primaryRiskType = riskData?.primary_risk_type ?? null;
   const riskTypeScores = riskData?.risk_type_scores ?? {};
-  const aiScore = aiDataPoint ? JSON.parse(aiDataPoint.value).ai_generated_score : null;
+  const aiScore = aiDataPoint ? safeJsonParse<any>(aiDataPoint.value, {}).ai_generated_score ?? null : null;
 
   let domainAgeYears: number | null = null;
   let domainAgeDays: number | null = null;
@@ -250,7 +261,7 @@ function SummaryCard({
   let rdapAvailable = false;
 
   if (signalsDataPoint) {
-    const signals = JSON.parse(signalsDataPoint.value);
+    const signals = safeJsonParse<any>(signalsDataPoint.value, {});
     if (signals.rdap) {
       domainAgeYears = signals.rdap.domain_age_years;
       domainAgeDays = signals.rdap.domain_age_days;

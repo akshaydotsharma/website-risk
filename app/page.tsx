@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { prisma } from "@/lib/prisma";
+import { DataPointKey } from "@/lib/constants";
 import HomePageContent from "./home-content";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ async function getRecentScans() {
       dataPoints: {
         where: {
           key: {
-            in: ["domain_risk_assessment", "ai_generated_likelihood"],
+            in: [DataPointKey.RISK_ASSESSMENT, DataPointKey.AI_LIKELIHOOD],
           },
         },
       },
@@ -32,7 +33,7 @@ async function getRecentScans() {
 
   return domains.map((domain) => {
     let riskScore: number | null = null;
-    const riskDp = domain.dataPoints.find((dp) => dp.key === "domain_risk_assessment");
+    const riskDp = domain.dataPoints.find((dp) => dp.key === DataPointKey.RISK_ASSESSMENT);
     if (riskDp) {
       try {
         riskScore = JSON.parse(riskDp.value).overall_risk_score ?? null;

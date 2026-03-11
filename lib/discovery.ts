@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { sslTolerantDispatcher } from "./ssl-fetch";
 import {
   fetchWithBrowser,
   fetchContactPageWithBrowser,
@@ -209,6 +210,8 @@ export async function fetchWithLogging(
       headers: {
         "User-Agent": DEFAULT_USER_AGENT,
       },
+      // @ts-expect-error -- Node 20+ supports undici dispatcher via this option
+      dispatcher: sslTolerantDispatcher,
     });
 
     clearTimeout(timeoutId);
@@ -238,38 +241,56 @@ export async function fetchWithLogging(
 
   result.fetchDurationMs = Date.now() - startTime;
 
-  // Browser fallback for homepage when HTTP fails (handles SSL issues, bot protection)
-  if (!result.content && source === "homepage") {
-    const errorMsg = result.errorMessage?.toLowerCase() || "";
-    const isSSLError = errorMsg.includes("ssl") ||
-                       errorMsg.includes("tls") ||
-                       errorMsg.includes("certificate") ||
-                       errorMsg.includes("dh key") ||
-                       errorMsg.includes("fetch failed");
-    const isBotProtection = result.statusCode === 403 || result.statusCode === 503;
-
-    if (isSSLError || isBotProtection) {
-      console.log(`[Discovery] HTTP failed for homepage, trying browser fallback...`);
-      try {
-        const browserResult = await fetchWithBrowser(
-          scanId,
-          url,
-          "homepage_browser",
-          { ignoreHTTPSErrors: true, timeout: 15000 }
-        );
-
-        if (browserResult.content) {
-          result.content = browserResult.content;
-          result.statusCode = browserResult.statusCode;
-          result.contentType = browserResult.contentType;
-          result.contentLength = browserResult.content.length;
-          result.errorMessage = null;
-          result.fetchDurationMs = Date.now() - startTime;
-          console.log(`[Discovery] Browser fallback succeeded for homepage`);
-        }
-      } catch (browserError) {
-        console.error(`[Discovery] Browser fallback also failed:`, browserError);
+  // Browser fallback for homepage when HTTP fails OR returns a JS shell with no real content
+  const needsBrowserFallback = source === "homepage" && (() => {
+    if (!result.content) {
+      const errorMsg = result.errorMessage?.toLowerCase() || "";
+      const isSSLError = errorMsg.includes("ssl") ||
+                         errorMsg.includes("tls") ||
+                         errorMsg.includes("certificate") ||
+                         errorMsg.includes("dh key") ||
+                         errorMsg.includes("fetch failed");
+      const isBotProtection = result.statusCode === 403 || result.statusCode === 503;
+      return isSSLError || isBotProtection;
+    }
+    // Content exists but is likely a JS shell (SPA) with no real text
+    // Detect by checking: small size + no meaningful text between tags
+    if (result.content.length < 3000) {
+      const textContent = result.content
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+        .replace(/<[^>]+>/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (textContent.length < 100) {
+        console.log(`[Discovery] Homepage is a JS shell (${result.content.length} bytes, ${textContent.length} chars text) — using browser`);
+        return true;
       }
+    }
+    return false;
+  })();
+
+  if (needsBrowserFallback) {
+    console.log(`[Discovery] Homepage needs browser fallback, trying...`);
+    try {
+      const browserResult = await fetchWithBrowser(
+        scanId,
+        url,
+        "homepage_browser",
+        { ignoreHTTPSErrors: true, timeout: 30000, waitForNetworkIdle: true, additionalWaitMs: 2000 }
+      );
+
+      if (browserResult.content) {
+        result.content = browserResult.content;
+        result.statusCode = browserResult.statusCode;
+        result.contentType = browserResult.contentType;
+        result.contentLength = browserResult.content.length;
+        result.errorMessage = null;
+        result.fetchDurationMs = Date.now() - startTime;
+        console.log(`[Discovery] Browser fallback succeeded for homepage (${result.contentLength} bytes)`);
+      }
+    } catch (browserError) {
+      console.error(`[Discovery] Browser fallback also failed:`, browserError);
     }
   }
 

@@ -7,22 +7,23 @@ datasource db {
 }
 
 model Domain {
-  id                 String              @id
-  normalizedUrl      String              @unique
-  isActive           Boolean             @default(false)
-  statusCode         Int?
-  lastCheckedAt      DateTime?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  riskScore          Int?
-  isManuallyRisky    Boolean             @default(false)
-  manualRiskNote     String?
-  manualRiskSetAt    DateTime?
-  dataPoints         DomainDataPoint[]
-  investigationNotes InvestigationNote[]
-  screenshots        Screenshot[]
-  urlInputs          UrlInput[]
-  scans              WebsiteScan[]
+  id                     String                  @id
+  normalizedUrl          String                  @unique
+  isActive               Boolean                 @default(false)
+  statusCode             Int?
+  lastCheckedAt          DateTime?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  riskScore              Int?
+  isManuallyRisky        Boolean                 @default(false)
+  manualRiskNote         String?
+  manualRiskSetAt        DateTime?
+  dataPoints             DomainDataPoint[]
+  investigationNotes     InvestigationNote[]
+  screenshots            Screenshot[]
+  urlInputs              UrlInput[]
+  scans                  WebsiteScan[]
+  investigationDomains   InvestigationDomain[]
 
   @@index([normalizedUrl])
   @@index([isManuallyRisky])
@@ -360,4 +361,37 @@ model Screenshot {
   @@index([domainId, createdAt(sort: Desc)])
   @@index([scanId])
   @@index([segmentGroup])
+}
+
+model Investigation {
+  id           String                @id @default(cuid())
+  name         String?
+  status       String                @default("pending") // pending, scanning, analyzing, completed, failed
+  domainCount  Int                   @default(0)
+  scannedCount Int                   @default(0)
+  error        String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  completedAt  DateTime?
+  domains      InvestigationDomain[]
+
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
+
+model InvestigationDomain {
+  id              String        @id @default(cuid())
+  investigationId String
+  domainId        String
+  scanId          String?
+  status          String        @default("pending") // pending, scanning, completed, failed
+  error           String?
+  createdAt       DateTime      @default(now())
+  investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+  domain          Domain        @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([investigationId, domainId])
+  @@index([investigationId])
+  @@index([domainId])
+  @@index([status])
 }

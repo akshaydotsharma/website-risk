@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { createHash } from "crypto";
 import {
   fetchWithBrowser,
   closeBrowser,
@@ -12,12 +11,43 @@ import {
   type AboutLinkResult,
 } from "./browser";
 import { prisma } from "./prisma";
+import { sslTolerantDispatcher } from "./ssl-fetch";
 import { decodeCfEmails } from "./extractHomepageArtifact";
+
+// Per-scan robots.txt cache to avoid redundant fetches
+const robotsTxtCache = new Map<string, { content: string | null; exists: boolean }>();
+export function clearRobotsTxtCache() { robotsTxtCache.clear(); }
+
+export async function fetchRobotsTxtCached(baseUrl: string): Promise<{ content: string | null; exists: boolean }> {
+  if (robotsTxtCache.has(baseUrl)) return robotsTxtCache.get(baseUrl)!;
+  try {
+    const response = await fetch(`${baseUrl}/robots.txt`, {
+      signal: AbortSignal.timeout(5000),
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      },
+    });
+    if (!response.ok) {
+      const result = { content: null, exists: false };
+      robotsTxtCache.set(baseUrl, result);
+      return result;
+    }
+    const content = await response.text();
+    const isValid = /User-agent|Sitemap|Disallow|Allow/i.test(content);
+    const result = { content: isValid ? content : null, exists: isValid };
+    robotsTxtCache.set(baseUrl, result);
+    return result;
+  } catch {
+    const result = { content: null, exists: false };
+    robotsTxtCache.set(baseUrl, result);
+    return result;
+  }
+}
 
 // Lazy-initialize Anthropic client to avoid build-time errors
 let anthropic: Anthropic | null = null;
 
-function getAnthropic(): Anthropic {
+export function getAnthropic(): Anthropic {
   if (!anthropic) {
     anthropic = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
@@ -30,7 +60,7 @@ function getAnthropic(): Anthropic {
 let lastClaudeCallTime = 0;
 const MIN_DELAY_BETWEEN_CALLS_MS = 1000; // 1 second between calls to avoid rate limits
 
-async function rateLimitedClaudeCall<T>(
+export async function rateLimitedClaudeCall<T>(
   callFn: () => Promise<T>,
   maxRetries: number = 3
 ): Promise<T> {
@@ -127,7 +157,7 @@ const aiGeneratedLikelihoodSchema = z.object({
   notes: z.string().nullable(),
 });
 
-export type AiGeneratedLikelihood = z.infer<typeof aiGeneratedLikelihoodSchema>;
+// AiGeneratedLikelihood type re-exported from ./aiLikelihood below
 
 // Data Point #3: About Page Schema (extracted during scan, used by comparison)
 const aboutPageSchema = z.object({
@@ -323,7 +353,7 @@ function extractJsonLdData(html: string): string {
  * Extract text content from HTML while preserving important structure
  * This creates a more LLM-friendly representation
  */
-function extractTextContent(html: string): string {
+export function extractTextContent(html: string): string {
   // First extract JSON-LD structured data before cleaning
   const jsonLdData = extractJsonLdData(html);
 
@@ -434,6 +464,8 @@ async function isUrlAccessibleDetailed(url: string): Promise<"accessible" | "blo
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       },
       redirect: 'follow',
+      // @ts-expect-error -- Node 20+ supports undici dispatcher
+      dispatcher: sslTolerantDispatcher,
     });
 
     clearTimeout(timeoutId);
@@ -493,40 +525,20 @@ function extractContactUrlsFromSitemap(sitemapContent: string, baseUrl: string):
  * Fetch and parse robots.txt to find sitemap URLs
  */
 async function fetchSitemapUrlsFromRobots(baseUrl: string): Promise<string[]> {
-  try {
-    const robotsUrl = `${baseUrl}/robots.txt`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+  const cached = await fetchRobotsTxtCached(baseUrl);
+  if (!cached.content) return [];
 
-    const response = await fetch(robotsUrl, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      },
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) return [];
-
-    const content = await response.text();
-    const sitemapUrls: string[] = [];
-
-    // Extract sitemap URLs from robots.txt
-    const lines = content.split('\n');
-    for (const line of lines) {
-      if (line.toLowerCase().startsWith('sitemap:')) {
-        const sitemapUrl = line.substring('sitemap:'.length).trim();
-        if (sitemapUrl) {
-          sitemapUrls.push(sitemapUrl);
-        }
+  const sitemapUrls: string[] = [];
+  const lines = cached.content.split('\n');
+  for (const line of lines) {
+    if (line.toLowerCase().startsWith('sitemap:')) {
+      const sitemapUrl = line.substring('sitemap:'.length).trim();
+      if (sitemapUrl) {
+        sitemapUrls.push(sitemapUrl);
       }
     }
-
-    return sitemapUrls;
-  } catch {
-    return [];
   }
+  return sitemapUrls;
 }
 
 /**
@@ -654,16 +666,31 @@ async function isContactPageValidWithBrowser(url: string, baseUrl: string, disco
 async function discoverContactPageUrl(baseUrl: string): Promise<string | null> {
   console.log(`Discovering contact page for ${baseUrl}...`);
 
-  // Strategy 1: Try common contact page URL patterns (fastest)
+  // Strategy 1: Try common contact page URL patterns (fastest) — probe in parallel
   let allBlocked = true;
-  for (const pattern of CONTACT_URL_PATTERNS) {
-    const candidateUrl = `${baseUrl}${pattern}`;
-    const result = await isUrlAccessibleDetailed(candidateUrl);
-    if (result === "accessible") {
-      console.log(`Found contact page via common pattern: ${candidateUrl}`);
-      return candidateUrl;
+  const PROBE_CONCURRENCY = 5;
+  let foundUrl: string | null = null;
+  for (let i = 0; i < CONTACT_URL_PATTERNS.length && !foundUrl; i += PROBE_CONCURRENCY) {
+    const batch = CONTACT_URL_PATTERNS.slice(i, i + PROBE_CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map(async (pattern) => {
+        const candidateUrl = `${baseUrl}${pattern}`;
+        const result = await isUrlAccessibleDetailed(candidateUrl);
+        return { candidateUrl, result };
+      })
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        if (r.value.result === "accessible" && !foundUrl) {
+          foundUrl = r.value.candidateUrl;
+        }
+        if (r.value.result !== "blocked") allBlocked = false;
+      }
     }
-    if (result !== "blocked") allBlocked = false;
+  }
+  if (foundUrl) {
+    console.log(`Found contact page via common pattern: ${foundUrl}`);
+    return foundUrl;
   }
 
   // Strategy 1b: If ALL pattern checks were blocked (403), retry top patterns with browser
@@ -775,6 +802,8 @@ async function fetchAndCleanPage(url: string, useBrowser: boolean = false): Prom
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       },
+      // @ts-expect-error -- Node 20+ supports undici dispatcher
+      dispatcher: sslTolerantDispatcher,
     });
 
     clearTimeout(timeoutId);
@@ -783,8 +812,17 @@ async function fetchAndCleanPage(url: string, useBrowser: boolean = false): Prom
     if (response.ok) {
       const rawHtml = await response.text();
 
+      // Detect SPA shells: tiny HTML with no real text (just JS bootstrapper)
+      const textOnly = rawHtml
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const isSpaShell = rawHtml.length < 3000 && textOnly.length < 100;
+
       // Check if we should retry with browser
-      if (shouldUseBrowser(rawHtml) || hasHiddenContactContent(rawHtml, url)) {
+      if (isSpaShell || shouldUseBrowser(rawHtml) || hasHiddenContactContent(rawHtml, url)) {
         console.log(`[fetchAndCleanPage] Detected dynamic content on ${url}, retrying with browser...`);
         return fetchAndCleanPage(url, true);
       }
@@ -887,31 +925,52 @@ export async function extractDataPoint(
       try {
         const aboutLinks = await findAboutLinksWithBrowser(baseUrl);
         // Validate each discovered URL — pick the first one that returns 200
-        for (const link of aboutLinks) {
+        // Skip homepage URLs (some sites return the homepage as a false match)
+        const normalizedBase = baseUrl.replace(/\/+$/, "");
+        for (const link of aboutLinks.filter(l => {
+          const normalized = l.url.replace(/\/+$/, "");
+          try { return new URL(normalized).pathname !== "/" && normalized !== normalizedBase; } catch { return true; }
+        })) {
           try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
-            const resp = await fetch(link.url, {
+            let resp = await fetch(link.url, {
               method: "HEAD",
               signal: controller.signal,
               redirect: "follow",
               headers: { "User-Agent": "Mozilla/5.0" },
+              // @ts-expect-error -- Node 20+ supports undici dispatcher
+              dispatcher: sslTolerantDispatcher,
             });
             clearTimeout(timeoutId);
+            // Some servers (Shopify-like SPAs) return 404 for HEAD but 200 for GET
+            if (!resp.ok) {
+              const getController = new AbortController();
+              const getTimeoutId = setTimeout(() => getController.abort(), 8000);
+              resp = await fetch(link.url, {
+                method: "GET",
+                signal: getController.signal,
+                redirect: "follow",
+                headers: { "User-Agent": "Mozilla/5.0" },
+                // @ts-expect-error -- Node 20+ supports undici dispatcher
+                dispatcher: sslTolerantDispatcher,
+              });
+              clearTimeout(getTimeoutId);
+            }
             if (resp.ok) {
               discoveredAboutPageUrl = link.url;
               break;
             }
           } catch {
-            // Link failed to fetch, try next
+            // Link failed to validate, try next
           }
         }
       } catch {
         // About page discovery failed
       }
 
-      // Cleanup browser after contact/about page fetching
-      await closeBrowser();
+      // Do NOT close the shared browser here - other concurrent tasks may still be using it
+      // Browser cleanup happens at the end of scan processing
     }
 
     if (!websiteContent) {
@@ -1111,8 +1170,6 @@ export async function extractDataPointFromContent(
           }
         } catch {
           // Browser about discovery failed
-        } finally {
-          await closeBrowser();
         }
       }
     }
@@ -1138,1149 +1195,8 @@ export async function extractDataPointFromContent(
 }
 
 // ============================================================================
-// AI-Generated Likelihood Extractor
+// AI-Generated Likelihood — extracted to lib/aiLikelihood.ts
+// Re-exported here for backward compatibility.
 // ============================================================================
+export { extractAiGeneratedLikelihood, type AiGeneratedLikelihood } from "./aiLikelihood";
 
-/**
- * Common site builder and framework markers
- */
-const SITE_BUILDER_PATTERNS: Array<{
-  pattern: RegExp;
-  name: string;
-  type: "builder" | "framework" | "cms";
-  aiScore: number; // Base contribution to markup subscore (0-100)
-}> = [
-  // AI/No-code builders (higher AI association)
-  { pattern: /generator["']?\s*[:=]\s*["']?Framer/i, name: "Framer", type: "builder", aiScore: 75 },
-  { pattern: /framer-/i, name: "Framer", type: "builder", aiScore: 70 },
-  { pattern: /generator["']?\s*[:=]\s*["']?Webflow/i, name: "Webflow", type: "builder", aiScore: 65 },
-  { pattern: /webflow/i, name: "Webflow", type: "builder", aiScore: 60 },
-  { pattern: /generator["']?\s*[:=]\s*["']?Wix/i, name: "Wix", type: "builder", aiScore: 60 },
-  { pattern: /wix\.com/i, name: "Wix", type: "builder", aiScore: 55 },
-  { pattern: /generator["']?\s*[:=]\s*["']?Squarespace/i, name: "Squarespace", type: "builder", aiScore: 55 },
-  { pattern: /squarespace/i, name: "Squarespace", type: "builder", aiScore: 50 },
-  { pattern: /generator["']?\s*[:=]\s*["']?Carrd/i, name: "Carrd", type: "builder", aiScore: 70 },
-  { pattern: /carrd\.co/i, name: "Carrd", type: "builder", aiScore: 65 },
-  { pattern: /generator["']?\s*[:=]\s*["']?Notion/i, name: "Notion", type: "builder", aiScore: 60 },
-  { pattern: /super\.so|notion\.site/i, name: "Notion Site", type: "builder", aiScore: 60 },
-
-  // Frameworks (moderate/low - built by developers)
-  { pattern: /__next/i, name: "Next.js", type: "framework", aiScore: 25 },
-  { pattern: /_next\//i, name: "Next.js", type: "framework", aiScore: 25 },
-  { pattern: /generator["']?\s*[:=]\s*["']?Next\.js/i, name: "Next.js", type: "framework", aiScore: 30 },
-  { pattern: /gatsby/i, name: "Gatsby", type: "framework", aiScore: 30 },
-  { pattern: /nuxt/i, name: "Nuxt", type: "framework", aiScore: 30 },
-  { pattern: /react/i, name: "React", type: "framework", aiScore: 20 },
-  { pattern: /vue/i, name: "Vue", type: "framework", aiScore: 20 },
-  { pattern: /svelte/i, name: "Svelte", type: "framework", aiScore: 25 },
-  { pattern: /astro/i, name: "Astro", type: "framework", aiScore: 30 },
-
-  // CMS (low - usually human-curated content)
-  { pattern: /generator["']?\s*[:=]\s*["']?WordPress/i, name: "WordPress", type: "cms", aiScore: 20 },
-  { pattern: /wp-content/i, name: "WordPress", type: "cms", aiScore: 15 },
-  { pattern: /generator["']?\s*[:=]\s*["']?Drupal/i, name: "Drupal", type: "cms", aiScore: 15 },
-  { pattern: /generator["']?\s*[:=]\s*["']?Joomla/i, name: "Joomla", type: "cms", aiScore: 15 },
-  { pattern: /shopify/i, name: "Shopify", type: "cms", aiScore: 35 },
-];
-
-/**
- * Patterns that might indicate AI-generated content in HTML
- */
-const AI_MARKER_PATTERNS: Array<{
-  pattern: RegExp;
-  description: string;
-  score: number;
-}> = [
-  { pattern: /generated\s*by\s*ai/i, description: "Contains 'generated by AI' text", score: 40 },
-  { pattern: /ai-generated/i, description: "Contains 'AI-generated' marker", score: 40 },
-  { pattern: /created\s*with\s*ai/i, description: "Contains 'created with AI' text", score: 35 },
-  { pattern: /<!--\s*AI\s*generated/i, description: "AI generated HTML comment", score: 30 },
-  { pattern: /chatgpt|gpt-4|claude|anthropic/i, description: "References AI model names", score: 25 },
-  { pattern: /lorem\s*ipsum/i, description: "Contains placeholder text", score: 15 },
-];
-
-/**
- * Patterns indicating suspicious/scam content commonly found on AI-generated fake stores
- * These detect nonsensical product names, broken English, and machine translation artifacts
- */
-const SUSPICIOUS_CONTENT_PATTERNS: Array<{
-  pattern: RegExp;
-  description: string;
-  score: number;
-  minMatches?: number; // Require multiple matches to trigger (default 1)
-}> = [
-  // Nonsensical product naming patterns (e.g., "Hahaha·Round Neck Version")
-  { pattern: /(?:hahaha|hehe|hihi|lol|wow)[·\-\s]+[a-z]/i, description: "Nonsensical product name prefix (e.g., 'Hahaha·')", score: 35 },
-
-  // Unusual punctuation in product names (middle dots, weird separators)
-  { pattern: /[A-Za-z]+[·•]+[A-Za-z]+\s+(?:version|edition|style|type|model)/i, description: "Unusual punctuation in product names", score: 25 },
-
-  // Overly literal/awkward translations (common in machine-translated content)
-  { pattern: /curved\s+blade\s+guard|straight\s+tube\s+pants|wide\s+leg\s+version/i, description: "Awkward literal translation patterns", score: 30 },
-  { pattern: /(?:small|big|large)\s+(?:fragrance|smell)\s+(?:version|type)/i, description: "Nonsensical fragrance descriptions", score: 30 },
-
-  // Generic scam store patterns
-  { pattern: /\b(?:high\s+quality|best\s+quality|top\s+quality)\s+(?:cheap|low\s+price|discount)/i, description: "Suspicious quality + price claims", score: 25 },
-  { pattern: /\b(?:factory|warehouse)\s+direct\s+(?:sale|price|shipping)/i, description: "Factory direct sale claims", score: 20 },
-  { pattern: /\b(?:limited\s+time|flash\s+sale|clearance)\s+(?:\d+%\s+off|\$\d+)/i, description: "Aggressive discount language", score: 15 },
-
-  // Broken English patterns (grammar issues common in scam sites)
-  { pattern: /\bvery\s+(?:much\s+)?(?:good|nice|beautiful)\s+(?:quality|product|item)\b/i, description: "Broken English quality claims", score: 20 },
-  { pattern: /\b(?:welcome\s+to\s+)?(?:our\s+)?(?:shop|store)\s+(?:buy|purchase)\b/i, description: "Awkward shopping invitation", score: 15 },
-  { pattern: /\bship(?:ping)?\s+(?:from|to)\s+(?:fast|quick|speed)/i, description: "Broken shipping description", score: 20 },
-
-  // Suspicious sizing/variant descriptions
-  { pattern: /\b(?:asian|china|chinese)\s+size\b/i, description: "Suspicious sizing disclaimer", score: 15 },
-  { pattern: /\bplease\s+(?:check|see|read)\s+(?:size\s+)?chart\s+(?:carefully|before)/i, description: "Excessive sizing warnings", score: 10, minMatches: 3 },
-
-  // Fake urgency/scarcity patterns
-  { pattern: /\b(?:only|just)\s+\d+\s+(?:left|remaining|pieces?|items?)\s+(?:in\s+stock)?/i, description: "Fake scarcity claims", score: 20 },
-  { pattern: /\b(?:order|buy)\s+(?:now|today)\s+(?:get|receive)\s+(?:free|gift)/i, description: "Fake urgency with gift claims", score: 20 },
-
-  // Nonsensical category combinations
-  { pattern: /\b(?:men|women|unisex)\s+(?:casual|fashion)\s+(?:streetwear|vintage)\s+(?:loose|slim)\b/i, description: "Keyword-stuffed product categories", score: 25 },
-
-  // Machine translation artifacts
-  { pattern: /\bthe\s+(?:is|are|was|were)\s+(?:very|so|too)\b/i, description: "Grammar error (article misuse)", score: 15, minMatches: 2 },
-  { pattern: /\b(?:it|this|that)\s+(?:is|are)\s+(?:a|an)\s+(?:very|so)\b/i, description: "Awkward intensifier usage", score: 15, minMatches: 2 },
-
-  // Suspicious review/testimonial patterns
-  { pattern: /\b(?:5\s+stars?|excellent|perfect)\s+(?:product|item|quality)\s+(?:fast|quick)\s+(?:shipping|delivery)/i, description: "Templated fake review pattern", score: 25 },
-  { pattern: /\bgood\s+(?:seller|shop|store)\s+(?:recommend|recommended)\b/i, description: "Generic fake review", score: 20 },
-
-  // Product description nonsense
-  { pattern: /\b(?:suitable|perfect)\s+for\s+(?:daily|everyday)\s+(?:wear|use|wearing)\s+(?:and|or)\s+(?:party|dating|travel)/i, description: "Overly broad usage claims", score: 15 },
-];
-
-/**
- * Detect suspicious content patterns in text
- * Returns detected patterns and total score contribution
- */
-function detectSuspiciousContent(text: string): {
-  patterns: string[];
-  score: number;
-  reasons: string[];
-} {
-  const detectedPatterns: string[] = [];
-  const reasons: string[] = [];
-  let totalScore = 0;
-
-  for (const { pattern, description, score, minMatches = 1 } of SUSPICIOUS_CONTENT_PATTERNS) {
-    const matches = text.match(new RegExp(pattern, 'gi'));
-    if (matches && matches.length >= minMatches) {
-      detectedPatterns.push(description);
-      totalScore += score;
-      if (matches.length >= 3) {
-        reasons.push(`${description} (found ${matches.length} instances)`);
-      } else {
-        reasons.push(description);
-      }
-    }
-  }
-
-  // Cap the score contribution from suspicious content
-  return {
-    patterns: detectedPatterns,
-    score: Math.min(60, totalScore), // Cap at 60 to avoid over-penalizing
-    reasons: reasons.slice(0, 4), // Limit reasons
-  };
-}
-
-/**
- * Free hosting platforms that are commonly used for quick AI-generated sites
- */
-const FREE_HOSTING_PATTERNS: Array<{
-  pattern: RegExp;
-  name: string;
-  score: number; // Contribution to infrastructure subscore
-}> = [
-  { pattern: /\.onrender\.com$/i, name: "Render", score: 40 },
-  { pattern: /\.vercel\.app$/i, name: "Vercel", score: 30 },
-  { pattern: /\.netlify\.app$/i, name: "Netlify", score: 30 },
-  { pattern: /\.github\.io$/i, name: "GitHub Pages", score: 25 },
-  { pattern: /\.pages\.dev$/i, name: "Cloudflare Pages", score: 25 },
-  { pattern: /\.herokuapp\.com$/i, name: "Heroku", score: 35 },
-  { pattern: /\.railway\.app$/i, name: "Railway", score: 35 },
-  { pattern: /\.fly\.dev$/i, name: "Fly.io", score: 30 },
-  { pattern: /\.surge\.sh$/i, name: "Surge", score: 35 },
-  { pattern: /\.glitch\.me$/i, name: "Glitch", score: 40 },
-  { pattern: /\.replit\.app$/i, name: "Replit", score: 45 },
-  { pattern: /\.web\.app$/i, name: "Firebase", score: 25 },
-  { pattern: /\.firebaseapp\.com$/i, name: "Firebase", score: 25 },
-];
-
-/**
- * Boilerplate/template indicators in HTML structure
- */
-const BOILERPLATE_PATTERNS: Array<{
-  pattern: RegExp;
-  description: string;
-}> = [
-  { pattern: /<title[^>]*>(?:My App|Vite App|React App|Next\.js App|Untitled|Home|Welcome)<\/title>/i, description: "Generic title" },
-  { pattern: /class="[^"]*(?:hero-content|hero-inner|hero-section)[^"]*"/i, description: "Generic hero section classes" },
-  { pattern: /<meta[^>]*description[^>]*content=["'](?:Your personal app|Welcome to|A website|My website|Description here)["']/i, description: "Placeholder meta description" },
-  { pattern: /<!--\s*(?:Add your content|Replace with|TODO|FIXME)\s*-->/i, description: "Template comments" },
-  { pattern: /Lorem ipsum|dolor sit amet|consectetur adipiscing/i, description: "Lorem ipsum placeholder" },
-];
-
-/**
- * Check if robots.txt exists for a domain
- */
-async function checkRobotsTxt(baseUrl: string): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    const response = await fetch(`${baseUrl}/robots.txt`, {
-      method: "HEAD",
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      },
-    });
-
-    clearTimeout(timeoutId);
-
-    // Check if it's a real robots.txt (not a soft 404)
-    if (response.ok) {
-      // Fetch content to verify it's not HTML/soft 404
-      const contentResponse = await fetch(`${baseUrl}/robots.txt`, {
-        signal: AbortSignal.timeout(5000),
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        },
-      });
-      const content = await contentResponse.text();
-      // Valid robots.txt should contain User-agent or Sitemap directives
-      return /User-agent|Sitemap|Disallow|Allow/i.test(content);
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check if sitemap.xml exists for a domain
- */
-async function checkSitemap(baseUrl: string): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    const response = await fetch(`${baseUrl}/sitemap.xml`, {
-      method: "GET",
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      },
-    });
-
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const content = await response.text();
-      // Valid sitemap should be XML with urlset or sitemapindex
-      return /<urlset|<sitemapindex|<url>|<loc>/i.test(content);
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check if favicon exists
- */
-async function checkFavicon(baseUrl: string, headHtml: string): Promise<boolean> {
-  // First check if favicon is declared in HTML
-  const hasFaviconTag = /<link[^>]*rel=["'](?:icon|shortcut icon|apple-touch-icon)["'][^>]*>/i.test(headHtml);
-
-  if (hasFaviconTag) {
-    return true;
-  }
-
-  // Check default favicon location
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    const response = await fetch(`${baseUrl}/favicon.ico`, {
-      method: "HEAD",
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      },
-    });
-
-    clearTimeout(timeoutId);
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Calculate SEO completeness score (0-100)
- * Higher score = better SEO = less likely AI-generated
- */
-function calculateSeoScore(headHtml: string, fullHtml: string): number {
-  let score = 0;
-
-  // Title tag exists and is not generic (20 points)
-  if (/<title[^>]*>.{10,}<\/title>/i.test(headHtml)) {
-    const titleMatch = headHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
-    if (titleMatch && !/^(?:Home|Welcome|Untitled|My App|Vite App|React App)$/i.test(titleMatch[1].trim())) {
-      score += 20;
-    } else {
-      score += 5; // Has title but it's generic
-    }
-  }
-
-  // Meta description exists and is substantial (20 points)
-  if (/<meta[^>]*name=["']description["'][^>]*content=["'][^"']{50,}["']/i.test(headHtml)) {
-    score += 20;
-  } else if (/<meta[^>]*name=["']description["']/i.test(headHtml)) {
-    score += 5; // Has description but it's short
-  }
-
-  // Open Graph tags (15 points)
-  if (/<meta[^>]*property=["']og:/i.test(headHtml)) {
-    score += 15;
-  }
-
-  // Twitter Card tags (10 points)
-  if (/<meta[^>]*name=["']twitter:/i.test(headHtml)) {
-    score += 10;
-  }
-
-  // Canonical URL (10 points)
-  if (/<link[^>]*rel=["']canonical["']/i.test(headHtml)) {
-    score += 10;
-  }
-
-  // Structured data / JSON-LD (15 points)
-  if (/<script[^>]*type=["']application\/ld\+json["']/i.test(fullHtml)) {
-    score += 15;
-  }
-
-  // Semantic HTML (10 points)
-  if (/<(?:header|main|footer|article|section|nav)[^>]*>/i.test(fullHtml)) {
-    score += 10;
-  }
-
-  return Math.min(100, score);
-}
-
-/**
- * Detect free hosting platform from URL
- */
-function detectFreeHosting(url: string): { name: string; score: number } | null {
-  try {
-    const hostname = new URL(url).hostname;
-    for (const { pattern, name, score } of FREE_HOSTING_PATTERNS) {
-      if (pattern.test(hostname)) {
-        return { name, score };
-      }
-    }
-  } catch {
-    // Invalid URL
-  }
-  return null;
-}
-
-/**
- * Check for boilerplate/template patterns
- */
-function checkBoilerplate(headHtml: string, fullHtml: string): { isBoilerplate: boolean; indicators: string[] } {
-  const indicators: string[] = [];
-
-  for (const { pattern, description } of BOILERPLATE_PATTERNS) {
-    if (pattern.test(headHtml) || pattern.test(fullHtml.substring(0, 10000))) {
-      indicators.push(description);
-    }
-  }
-
-  return {
-    isBoilerplate: indicators.length >= 2, // Need at least 2 indicators
-    indicators,
-  };
-}
-
-/**
- * Compute infrastructure signals for AI-generated likelihood
- */
-async function computeInfrastructureSignals(
-  url: string,
-  headHtml: string,
-  fullHtml: string
-): Promise<{
-  infrastructureSubscore: number;
-  signals: {
-    has_robots_txt: boolean;
-    has_sitemap: boolean;
-    has_favicon: boolean;
-    free_hosting: string | null;
-    seo_score: number;
-    is_boilerplate: boolean;
-  };
-  reasons: string[];
-}> {
-  const reasons: string[] = [];
-  let infrastructureSubscore = 0;
-
-  // Get base URL
-  const urlObj = new URL(url);
-  const baseUrl = `${urlObj.protocol}//${urlObj.host}`;
-
-  // Check all infrastructure signals in parallel
-  const [hasRobotsTxt, hasSitemap, hasFavicon] = await Promise.all([
-    checkRobotsTxt(baseUrl),
-    checkSitemap(baseUrl),
-    checkFavicon(baseUrl, headHtml),
-  ]);
-
-  // Check free hosting
-  const freeHosting = detectFreeHosting(url);
-
-  // Calculate SEO score
-  const seoScore = calculateSeoScore(headHtml, fullHtml);
-
-  // Check boilerplate
-  const boilerplateCheck = checkBoilerplate(headHtml, fullHtml);
-
-  // Calculate infrastructure subscore (higher = more AI-like)
-
-  // No robots.txt (+20)
-  if (!hasRobotsTxt) {
-    infrastructureSubscore += 20;
-    reasons.push("Missing robots.txt");
-  }
-
-  // No sitemap (+15)
-  if (!hasSitemap) {
-    infrastructureSubscore += 15;
-    reasons.push("Missing sitemap.xml");
-  }
-
-  // No favicon (+10)
-  if (!hasFavicon) {
-    infrastructureSubscore += 10;
-    reasons.push("Missing favicon");
-  }
-
-  // Free hosting platform
-  if (freeHosting) {
-    infrastructureSubscore += freeHosting.score;
-    reasons.push(`Hosted on ${freeHosting.name} (free tier)`);
-  }
-
-  // Poor SEO (inverse of seoScore)
-  const seoContribution = Math.round((100 - seoScore) * 0.25); // Up to 25 points
-  infrastructureSubscore += seoContribution;
-  if (seoScore < 30) {
-    reasons.push("Minimal SEO setup");
-  }
-
-  // Boilerplate structure
-  if (boilerplateCheck.isBoilerplate) {
-    infrastructureSubscore += 20;
-    reasons.push("Generic boilerplate structure detected");
-  }
-
-  return {
-    infrastructureSubscore: Math.min(100, infrastructureSubscore),
-    signals: {
-      has_robots_txt: hasRobotsTxt,
-      has_sitemap: hasSitemap,
-      has_favicon: hasFavicon,
-      free_hosting: freeHosting?.name || null,
-      seo_score: seoScore,
-      is_boilerplate: boilerplateCheck.isBoilerplate,
-    },
-    reasons: reasons.slice(0, 4), // Limit to 4 reasons from infrastructure
-  };
-}
-
-/**
- * Extract the <head> section from HTML
- */
-function extractHeadHtml(html: string): string {
-  const headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
-  if (headMatch) {
-    return headMatch[0];
-  }
-  // If no head tag found, return first portion of HTML
-  return html.substring(0, 5000);
-}
-
-/**
- * Generate SHA-256 hash of content
- */
-function generateSha256(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
-}
-
-/**
- * Extract response headers relevant for tech detection
- */
-function extractRelevantHeaders(headers?: Record<string, string>): Record<string, string | null> {
-  const relevant: Record<string, string | null> = {
-    server: null,
-    "x-powered-by": null,
-    "x-generator": null,
-  };
-
-  if (!headers) return relevant;
-
-  for (const [key, value] of Object.entries(headers)) {
-    const lowerKey = key.toLowerCase();
-    if (lowerKey in relevant) {
-      relevant[lowerKey] = value;
-    }
-  }
-
-  return relevant;
-}
-
-/**
- * Compute deterministic markup signals from HTML
- * Returns markup subscore and detected signals
- */
-function computeMarkupSignals(
-  headHtml: string,
-  fullHtml: string,
-  headers?: Record<string, string>,
-  textContent?: string
-): {
-  markupSubscore: number;
-  generatorMeta: string | null;
-  techHints: string[];
-  aiMarkers: string[];
-  suspiciousContentPatterns: string[];
-  reasons: string[];
-} {
-  const techHints: string[] = [];
-  const aiMarkers: string[] = [];
-  const reasons: string[] = [];
-  let generatorMeta: string | null = null;
-  let markupSubscore = 0;
-
-  // Check for site builder/framework patterns
-  const detectedBuilders = new Map<string, number>();
-
-  for (const { pattern, name, aiScore } of SITE_BUILDER_PATTERNS) {
-    if (pattern.test(headHtml) || pattern.test(fullHtml.substring(0, 50000))) {
-      if (!detectedBuilders.has(name) || detectedBuilders.get(name)! < aiScore) {
-        detectedBuilders.set(name, aiScore);
-      }
-    }
-  }
-
-  // Process detected builders
-  for (const [name, score] of detectedBuilders) {
-    techHints.push(name.toLowerCase().replace(/\s+/g, "-"));
-    if (!generatorMeta) {
-      generatorMeta = name;
-    }
-    // Take highest score builder
-    if (score > markupSubscore) {
-      markupSubscore = score;
-    }
-  }
-
-  if (generatorMeta) {
-    const builderType = SITE_BUILDER_PATTERNS.find(
-      (p) => p.name === generatorMeta
-    )?.type;
-    if (builderType === "builder") {
-      reasons.push(`Built with ${generatorMeta} (no-code builder)`);
-    } else if (builderType === "framework") {
-      reasons.push(`Uses ${generatorMeta} framework`);
-    } else {
-      reasons.push(`Powered by ${generatorMeta}`);
-    }
-  }
-
-  // Check for AI markers in content
-  for (const { pattern, description, score } of AI_MARKER_PATTERNS) {
-    if (pattern.test(fullHtml)) {
-      aiMarkers.push(description);
-      markupSubscore = Math.min(100, markupSubscore + score);
-      reasons.push(description);
-    }
-  }
-
-  // Check for suspicious content patterns (nonsensical names, broken English, scam indicators)
-  const contentToAnalyze = textContent || fullHtml;
-  const suspiciousContent = detectSuspiciousContent(contentToAnalyze);
-  const suspiciousContentPatterns = suspiciousContent.patterns;
-
-  if (suspiciousContent.score > 0) {
-    markupSubscore = Math.min(100, markupSubscore + suspiciousContent.score);
-    // Add top suspicious content reasons
-    reasons.push(...suspiciousContent.reasons.slice(0, 2));
-  }
-
-  // Check headers for additional signals
-  if (headers) {
-    const relevantHeaders = extractRelevantHeaders(headers);
-    if (relevantHeaders.server?.toLowerCase().includes("vercel")) {
-      techHints.push("vercel");
-    }
-    if (relevantHeaders.server?.toLowerCase().includes("netlify")) {
-      techHints.push("netlify");
-    }
-    if (relevantHeaders["x-powered-by"]) {
-      const powered = relevantHeaders["x-powered-by"].toLowerCase();
-      if (powered.includes("next.js") && !techHints.includes("next.js")) {
-        techHints.push("next.js");
-      }
-    }
-  }
-
-  // Check for common CSS framework markers (tailwind is often used with AI builders)
-  if (/tailwind|tw-/i.test(fullHtml)) {
-    techHints.push("tailwind");
-  }
-
-  // Deduplicate tech hints
-  const uniqueTechHints = [...new Set(techHints)];
-
-  // Ensure subscore is within bounds
-  markupSubscore = Math.min(100, Math.max(0, markupSubscore));
-
-  return {
-    markupSubscore,
-    generatorMeta,
-    techHints: uniqueTechHints,
-    aiMarkers,
-    suspiciousContentPatterns,
-    reasons: reasons.slice(0, 5), // Increased limit to include suspicious content reasons
-  };
-}
-
-/**
- * Store homepage artifacts for a scan
- */
-async function storeHomepageArtifacts(
-  scanId: string,
-  url: string,
-  html: string,
-  text: string,
-  contentType?: string
-): Promise<void> {
-  const htmlSha256 = generateSha256(html);
-  const textSha256 = generateSha256(text);
-
-  // Truncate snippets
-  const htmlSnippet = html.substring(0, MAX_HTML_SNIPPET_SIZE);
-  const textSnippet = text.substring(0, MAX_TEXT_SNIPPET_SIZE);
-
-  await prisma.$transaction([
-    prisma.scanArtifact.upsert({
-      where: {
-        scanId_type: {
-          scanId,
-          type: "homepage_html",
-        },
-      },
-      create: {
-        scanId,
-        url,
-        type: "homepage_html",
-        sha256: htmlSha256,
-        snippet: htmlSnippet,
-        contentType: contentType || "text/html",
-      },
-      update: {
-        url,
-        sha256: htmlSha256,
-        snippet: htmlSnippet,
-        contentType: contentType || "text/html",
-        fetchedAt: new Date(),
-      },
-    }),
-    prisma.scanArtifact.upsert({
-      where: {
-        scanId_type: {
-          scanId,
-          type: "homepage_text",
-        },
-      },
-      create: {
-        scanId,
-        url,
-        type: "homepage_text",
-        sha256: textSha256,
-        snippet: textSnippet,
-        contentType: "text/plain",
-      },
-      update: {
-        url,
-        sha256: textSha256,
-        snippet: textSnippet,
-        contentType: "text/plain",
-        fetchedAt: new Date(),
-      },
-    }),
-  ]);
-}
-
-/**
- * Get or fetch homepage artifacts for a scan
- * Returns the artifacts if they exist, otherwise fetches the homepage
- */
-async function getOrFetchHomepageArtifacts(
-  scanId: string,
-  url: string
-): Promise<{
-  htmlSnippet: string;
-  textSnippet: string;
-  headHtml: string;
-  headers?: Record<string, string>;
-} | null> {
-  // Check if artifacts already exist
-  const existingArtifacts = await prisma.scanArtifact.findMany({
-    where: { scanId },
-  });
-
-  const htmlArtifact = existingArtifacts.find((a) => a.type === "homepage_html");
-  const textArtifact = existingArtifacts.find((a) => a.type === "homepage_text");
-
-  if (htmlArtifact && textArtifact) {
-    return {
-      htmlSnippet: htmlArtifact.snippet,
-      textSnippet: textArtifact.snippet,
-      headHtml: extractHeadHtml(htmlArtifact.snippet),
-    };
-  }
-
-  // Fetch homepage if artifacts don't exist
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      },
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      console.warn(`Failed to fetch homepage for AI analysis: ${response.status}`);
-      return null;
-    }
-
-    const html = await response.text();
-    const contentType = response.headers.get("content-type") || undefined;
-
-    // Extract headers
-    const headers: Record<string, string> = {};
-    response.headers.forEach((value, key) => {
-      headers[key] = value;
-    });
-
-    // Generate text content (strip scripts/styles)
-    const text = extractTextContent(html);
-
-    // Store artifacts
-    await storeHomepageArtifacts(scanId, url, html, text, contentType);
-
-    return {
-      htmlSnippet: html.substring(0, MAX_HTML_SNIPPET_SIZE),
-      textSnippet: text.substring(0, MAX_TEXT_SNIPPET_SIZE),
-      headHtml: extractHeadHtml(html),
-      headers,
-    };
-  } catch (error) {
-    // Check for SSL errors (weak DH key, cert issues, etc.) and fallback to browser
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const isSSLError = errorMessage.includes('SSL') ||
-                       errorMessage.includes('TLS') ||
-                       errorMessage.includes('certificate') ||
-                       (error as NodeJS.ErrnoException)?.code?.includes('SSL');
-
-    if (isSSLError) {
-      console.warn(`SSL error fetching homepage, falling back to browser: ${errorMessage}`);
-      try {
-        const browserResult = await fetchWithBrowser(scanId, url, 'ai_analysis_fallback', {
-          waitForNetworkIdle: false,
-          additionalWaitMs: 2000,
-          expandSections: false,
-        });
-
-        if (browserResult.content) {
-          const html = browserResult.content;
-          const text = extractTextContent(html);
-          const contentType = browserResult.contentType || undefined;
-
-          await storeHomepageArtifacts(scanId, url, html, text, contentType);
-
-          return {
-            htmlSnippet: html.substring(0, MAX_HTML_SNIPPET_SIZE),
-            textSnippet: text.substring(0, MAX_TEXT_SNIPPET_SIZE),
-            headHtml: extractHeadHtml(html),
-          };
-        }
-      } catch (browserError) {
-        console.error("Browser fallback also failed:", browserError);
-      }
-    }
-
-    console.error("Error fetching homepage for AI analysis:", error);
-    return null;
-  }
-}
-
-/**
- * Call OpenAI to analyze homepage content for AI-generated likelihood
- */
-async function analyzeWithClaude(
-  textSnippet: string,
-  headHtml: string,
-  headers: Record<string, string | null>,
-  deterministicSignals: ReturnType<typeof computeMarkupSignals>,
-  infrastructureSignals: Awaited<ReturnType<typeof computeInfrastructureSignals>>
-): Promise<AiGeneratedLikelihood> {
-  const currentYear = new Date().getFullYear();
-  const currentDate = new Date().toISOString().split('T')[0];
-
-  const systemPrompt = `You are an AI content analyst helping assess whether a website's homepage appears to be AI-generated or is a potential scam/fake store.
-
-IMPORTANT: Today's date is ${currentDate}. The current year is ${currentYear}. When evaluating copyright notices or dates, consider ${currentYear} to be the current year, NOT a future date.
-
-IMPORTANT GUIDELINES:
-- You are providing a HEURISTIC ESTIMATE, not a definitive judgment
-- Be CONSERVATIVE: if evidence is unclear, lean toward moderate scores (40-60) with lower confidence
-- Use "likelihood" and "estimate" language, never claim certainty
-- Consider that many legitimate websites use templates, no-code builders, or AI assistance
-- Low text volume or minimal content should reduce confidence, not increase AI score
-
-SUSPICIOUS CONTENT INDICATORS (strong signals of AI-generated scam sites):
-- Nonsensical or gibberish product names (e.g., "Hahaha·Round Neck Version", "Curved Blade Guard Trousers")
-- Unusual punctuation in product names (middle dots ·, random symbols)
-- Broken English or awkward machine translation artifacts
-- Overly literal translations that don't make sense in context
-- Keyword-stuffed category combinations ("Men Casual Fashion Streetwear Vintage Loose")
-- Fake urgency/scarcity claims ("Only 3 left!", "Flash sale ends in...")
-- Templated fake reviews ("5 stars, fast shipping, good seller recommend")
-- Suspicious sizing disclaimers ("Asian size", "Please check size chart carefully before order")
-- Factory direct/warehouse sale claims combined with very low prices
-
-SCORING CRITERIA for content_subscore (0-100):
-- 0-30: Content appears naturally written, unique voice, specific details, industry expertise
-- 31-50: Mixed signals or insufficient content to assess
-- 51-70: Some generic patterns, template-like phrasing, but could be human-written
-- 71-85: Strong AI markers (overly formal, generic buzzwords, lacks specificity)
-- 86-100: Clear scam indicators (nonsensical names, broken English, fake reviews)
-
-SCORING CRITERIA for markup_subscore (0-100):
-- 0-30: Custom development, unique structure, hand-crafted feel
-- 31-50: Standard framework usage, common patterns
-- 51-70: No-code builder or template-based, but well-customized
-- 71-100: Heavy AI/template markers, minimal customization
-
-SCORING CRITERIA for infrastructure_subscore (0-100):
-- 0-30: Professional setup with robots.txt, sitemap, good SEO, custom domain
-- 31-50: Basic setup, some missing elements
-- 51-70: Minimal setup, free hosting, missing key files
-- 71-100: Very sparse setup, free hosting, no SEO, boilerplate
-
-Return ONLY valid JSON matching this exact schema:
-{
-  "ai_generated_score": <0-100 integer>,
-  "confidence": <0-100 integer>,
-  "subscores": {
-    "content": <0-100 integer>,
-    "markup": <0-100 integer>,
-    "infrastructure": <0-100 integer>
-  },
-  "signals": {
-    "generator_meta": <string or null>,
-    "tech_hints": [<string array>],
-    "ai_markers": [<string array>],
-    "suspicious_content_patterns": [<string array - list specific nonsensical names, broken English examples, or scam indicators found>],
-    "infrastructure": {
-      "has_robots_txt": <boolean>,
-      "has_sitemap": <boolean>,
-      "has_favicon": <boolean>,
-      "free_hosting": <string or null>,
-      "seo_score": <0-100 integer>,
-      "is_boilerplate": <boolean>
-    }
-  },
-  "reasons": [<3-6 concise bullet strings>],
-  "notes": <string or null>
-}`;
-
-  const userPrompt = `Analyze this homepage for AI-generated likelihood and potential scam indicators.
-
-DETECTED SIGNALS (from deterministic analysis):
-- Generator: ${deterministicSignals.generatorMeta || "Unknown"}
-- Tech hints: ${deterministicSignals.techHints.join(", ") || "None detected"}
-- AI markers found: ${deterministicSignals.aiMarkers.join(", ") || "None"}
-- Suspicious content patterns found: ${deterministicSignals.suspiciousContentPatterns.join(", ") || "None"}
-- Initial markup subscore: ${deterministicSignals.markupSubscore}
-
-INFRASTRUCTURE SIGNALS:
-- Has robots.txt: ${infrastructureSignals.signals.has_robots_txt}
-- Has sitemap: ${infrastructureSignals.signals.has_sitemap}
-- Has favicon: ${infrastructureSignals.signals.has_favicon}
-- Free hosting: ${infrastructureSignals.signals.free_hosting || "No (custom domain)"}
-- SEO score: ${infrastructureSignals.signals.seo_score}/100
-- Boilerplate detected: ${infrastructureSignals.signals.is_boilerplate}
-- Initial infrastructure subscore: ${infrastructureSignals.infrastructureSubscore}
-
-RESPONSE HEADERS:
-${JSON.stringify(headers, null, 2)}
-
-<HEAD> SECTION (truncated):
-${headHtml.substring(0, 3000)}
-
-VISIBLE TEXT CONTENT (truncated):
-${textSnippet}
-
-Based on the above, provide your AI-generated likelihood assessment. Remember:
-- Be conservative with extreme scores
-- Reduce confidence if text is sparse or signals are mixed
-- Consider that no-code builders != AI-generated content
-- Missing robots.txt, sitemap, or favicon is a signal but not definitive
-- Free hosting platforms increase suspicion but many legitimate projects use them
-- IMPORTANT: Look carefully for nonsensical product names, broken English, and scam patterns in the text content
-- If you find gibberish names like "Hahaha·Round Neck Version" or broken translations, this strongly indicates AI-generated scam content
-- Include specific examples of suspicious content in the suspicious_content_patterns array
-- The final ai_generated_score should be: round(0.55 * content + 0.25 * markup + 0.20 * infrastructure)`;
-
-  try {
-    // Rate-limited Claude call with automatic retry on 429 errors
-    // Use assistant prefill to force JSON output
-    const response = await rateLimitedClaudeCall(() =>
-      getAnthropic().messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages: [
-          { role: "user", content: userPrompt },
-          { role: "assistant", content: "{" },
-        ],
-      })
-    );
-
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No response from Claude");
-    }
-
-    // Prepend the "{" from the prefill since the response continues from there
-    let content = "{" + textBlock.text.trim();
-    content = content.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
-
-    const parsed = JSON.parse(content);
-    return aiGeneratedLikelihoodSchema.parse(parsed);
-  } catch (error) {
-    console.error("Claude analysis error:", error);
-    throw error;
-  }
-}
-
-/**
- * Create a fallback result when extraction fails
- */
-function createFallbackResult(
-  errorMessage: string,
-  deterministicSignals?: ReturnType<typeof computeMarkupSignals>,
-  infrastructureSignals?: Awaited<ReturnType<typeof computeInfrastructureSignals>>
-): AiGeneratedLikelihood {
-  return {
-    ai_generated_score: 50,
-    confidence: 0,
-    subscores: {
-      content: 50,
-      markup: deterministicSignals?.markupSubscore ?? 50,
-      infrastructure: infrastructureSignals?.infrastructureSubscore ?? 50,
-    },
-    signals: {
-      generator_meta: deterministicSignals?.generatorMeta ?? null,
-      tech_hints: deterministicSignals?.techHints ?? [],
-      ai_markers: deterministicSignals?.aiMarkers ?? [],
-      suspicious_content_patterns: deterministicSignals?.suspiciousContentPatterns ?? [],
-      infrastructure: infrastructureSignals?.signals ?? {
-        has_robots_txt: false,
-        has_sitemap: false,
-        has_favicon: false,
-        free_hosting: null,
-        seo_score: 0,
-        is_boilerplate: false,
-      },
-    },
-    reasons: ["Analysis unavailable"],
-    notes: errorMessage,
-  };
-}
-
-/**
- * Extract AI-generated likelihood for a scan
- * This is the main entry point for the AI-generated likelihood extractor
- */
-export async function extractAiGeneratedLikelihood(
-  scanId: string,
-  url: string,
-  domain: string,
-  existingCrawledPages?: Map<string, string>
-): Promise<DataPointExtractionResult> {
-  const extractor = dataPointRegistry.ai_generated_likelihood;
-
-  try {
-    let htmlSnippet: string;
-    let textSnippet: string;
-    let headHtml: string;
-    let headers: Record<string, string> | undefined;
-
-    // Check if we have crawled homepage content available
-    if (existingCrawledPages && existingCrawledPages.has(url)) {
-      const html = existingCrawledPages.get(url)!;
-      htmlSnippet = html.substring(0, MAX_HTML_SNIPPET_SIZE);
-      textSnippet = extractTextContent(html).substring(0, MAX_TEXT_SNIPPET_SIZE);
-      headHtml = extractHeadHtml(html);
-
-      // Store artifacts from crawled content
-      await storeHomepageArtifacts(scanId, url, html, textSnippet);
-    } else {
-      // Fetch or retrieve from artifacts
-      const artifacts = await getOrFetchHomepageArtifacts(scanId, url);
-
-      if (!artifacts) {
-        // Cannot proceed without homepage content
-        const fallback = createFallbackResult("Could not fetch homepage content");
-        return {
-          key: extractor.key,
-          label: extractor.label,
-          value: fallback,
-          sources: [url],
-          rawOpenAIResponse: null,
-        };
-      }
-
-      htmlSnippet = artifacts.htmlSnippet;
-      textSnippet = artifacts.textSnippet;
-      headHtml = artifacts.headHtml;
-      headers = artifacts.headers;
-    }
-
-    // Compute deterministic markup signals (pass textSnippet for suspicious content detection)
-    const deterministicSignals = computeMarkupSignals(headHtml, htmlSnippet, headers, textSnippet);
-
-    // Compute infrastructure signals (robots.txt, sitemap, favicon, etc.)
-    console.log("Computing infrastructure signals...");
-    const infrastructureSignals = await computeInfrastructureSignals(url, headHtml, htmlSnippet);
-    console.log("Infrastructure signals:", infrastructureSignals);
-
-    // Check for low-confidence scenarios
-    const textLength = textSnippet.replace(/\s+/g, " ").trim().length;
-    let confidenceAdjustment = 0;
-    const additionalNotes: string[] = [];
-
-    if (textLength < 500) {
-      confidenceAdjustment -= 30;
-      additionalNotes.push("Low text volume on homepage");
-    } else if (textLength < 1000) {
-      confidenceAdjustment -= 15;
-      additionalNotes.push("Limited text content");
-    }
-
-    // Call Claude for analysis
-    let result: AiGeneratedLikelihood;
-    let rawResponse: any = null;
-
-    try {
-      const headersSafe = extractRelevantHeaders(headers);
-      result = await analyzeWithClaude(
-        textSnippet,
-        headHtml,
-        headersSafe,
-        deterministicSignals,
-        infrastructureSignals
-      );
-
-      // Adjust confidence based on content volume
-      result.confidence = Math.max(0, Math.min(100, result.confidence + confidenceAdjustment));
-
-      // Add notes about low content if applicable
-      if (additionalNotes.length > 0) {
-        result.notes = [result.notes, ...additionalNotes].filter(Boolean).join("; ") || null;
-      }
-
-      rawResponse = { model: "claude-sonnet-4-20250514", analysis: "completed" };
-    } catch (claudeError) {
-      console.error("Claude call failed, using deterministic signals only:", claudeError);
-
-      // Create result from deterministic signals only
-      const markupScore = deterministicSignals.markupSubscore;
-      const infraScore = infrastructureSignals.infrastructureSubscore;
-      // Formula: 0.55 * content + 0.25 * markup + 0.20 * infrastructure (content defaults to 50)
-      const aiScore = Math.round(0.55 * 50 + 0.25 * markupScore + 0.20 * infraScore);
-
-      // Combine reasons from markup and infrastructure
-      const allReasons = [
-        ...deterministicSignals.reasons,
-        ...infrastructureSignals.reasons,
-      ].slice(0, 6);
-
-      result = {
-        ai_generated_score: aiScore,
-        confidence: Math.max(0, 20 + confidenceAdjustment), // Low confidence without model
-        subscores: {
-          content: 50, // Unknown
-          markup: markupScore,
-          infrastructure: infraScore,
-        },
-        signals: {
-          generator_meta: deterministicSignals.generatorMeta,
-          tech_hints: deterministicSignals.techHints,
-          ai_markers: deterministicSignals.aiMarkers,
-          suspicious_content_patterns: deterministicSignals.suspiciousContentPatterns,
-          infrastructure: infrastructureSignals.signals,
-        },
-        reasons: allReasons.length > 0
-          ? allReasons
-          : ["Insufficient data for content analysis"],
-        notes: [
-          "Claude unavailable - using markup and infrastructure signals only",
-          ...additionalNotes,
-        ].join("; "),
-      };
-
-      rawResponse = {
-        error: claudeError instanceof Error ? claudeError.message : "Unknown error",
-        fallback: true,
-      };
-    }
-
-    return {
-      key: extractor.key,
-      label: extractor.label,
-      value: result,
-      sources: [url],
-      rawOpenAIResponse: rawResponse,
-    };
-  } catch (error) {
-    console.error("Error extracting AI-generated likelihood:", error);
-
-    // Return a fallback result instead of throwing
-    const fallback = createFallbackResult(
-      error instanceof Error ? error.message : "Unknown extraction error"
-    );
-
-    return {
-      key: extractor.key,
-      label: extractor.label,
-      value: fallback,
-      sources: [url],
-      rawOpenAIResponse: { error: error instanceof Error ? error.message : "Unknown error" },
-    };
-  }
-}

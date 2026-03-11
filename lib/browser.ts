@@ -633,10 +633,14 @@ export async function findAboutLinksWithBrowser(
     // Dismiss any overlays
     await dismissOverlays(page);
 
+    // Scroll to bottom to ensure footer is loaded (about links often in footer)
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(2000);
+
     const results: AboutLinkResult[] = [];
     const seenUrls = new Set<string>();
 
-    // Strategy 1: Find traditional <a href> links with about-related text or URL
+    // Strategy 1: Find traditional <a href> links and onclick handlers with about-related text or URL
     const traditionalLinks = await page.evaluate((patterns: string[]) => {
       const found: { url: string; anchorText: string; matchType: string }[] = [];
       const links = document.querySelectorAll('a[href]');
@@ -664,19 +668,44 @@ export async function findAboutLinksWithBrowser(
         );
 
         if (matchesUrl) {
-          // URL match is high confidence — always accept
           found.push({
             url: href,
             anchorText: link.textContent?.trim() || '',
             matchType: 'url',
           });
         } else if (matchesText && !excludedPaths.test(href)) {
-          // Text match — only accept if the URL isn't obviously wrong
           found.push({
             url: href,
             anchorText: link.textContent?.trim() || '',
             matchType: 'text',
           });
+        }
+      });
+
+      // Also extract URLs from onclick="window.open('...')" handlers (no href attribute)
+      const onclickElements = document.querySelectorAll('[onclick]');
+      onclickElements.forEach((el) => {
+        const onclick = el.getAttribute('onclick') || '';
+        const urlMatch = onclick.match(/(?:window\.open|location\.href)\s*[=(]\s*['"]([^'"]+)['"]/);
+        if (!urlMatch) return;
+
+        const href = urlMatch[1];
+        if (href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) return;
+
+        // Resolve relative URLs
+        let fullUrl: string;
+        try { fullUrl = new URL(href, window.location.href).href; } catch { return; }
+
+        const text = el.textContent?.trim().toLowerCase() || '';
+        const ariaLabel = el.getAttribute('aria-label')?.trim().toLowerCase() || '';
+
+        const matchesUrl = /\/about(?:-us|us)?(?:$|\/|\?|#)|\/our-(?:story|company|team)|\/who-we-are|\/toAbout/i.test(fullUrl);
+        const matchesText = patterns.some(pattern => text === pattern || ariaLabel === pattern);
+
+        if (matchesUrl) {
+          found.push({ url: fullUrl, anchorText: el.textContent?.trim() || '', matchType: 'url' });
+        } else if (matchesText && !excludedPaths.test(fullUrl)) {
+          found.push({ url: fullUrl, anchorText: el.textContent?.trim() || '', matchType: 'text' });
         }
       });
 
@@ -693,38 +722,67 @@ export async function findAboutLinksWithBrowser(
       }
     }
 
-
     // Strategy 2: If no traditional links found, look for clickable elements with about text
+    // Uses page.evaluate with regex for case-insensitive matching across all element types
+    // (handles SPAs using <div>/<span> with click handlers instead of <a> tags)
     if (results.length === 0) {
+      const aboutPatterns = [
+        { label: "About Us", regex: "about\\s*us" },
+        { label: "About", regex: "^about$" },
+        { label: "Our Story", regex: "our\\s*story" },
+        { label: "Our Company", regex: "our\\s*company" },
+        { label: "Who We Are", regex: "who\\s*we\\s*are" },
+      ];
 
-      for (const pattern of ["About Us", "About", "Our Story", "Our Company", "Who We Are"]) {
+      for (const { label, regex } of aboutPatterns) {
         try {
-          const element = page.locator(`text="${pattern}"`).first();
-          const isVisible = await element.isVisible({ timeout: 1000 }).catch(() => false);
+          // Find clickable elements matching the text pattern (case-insensitive)
+          const matchingElements = await page.evaluate((patternStr: string) => {
+            const re = new RegExp(patternStr, 'i');
+            const elements: { text: string; index: number }[] = [];
+            const allEls = document.querySelectorAll('a, div, span, p, li, button');
+            allEls.forEach((el, idx) => {
+              const text = el.textContent?.trim() || '';
+              if (text.length > 0 && text.length < 60 && re.test(text)) {
+                // Prefer leaf elements (no nested block children with different text)
+                const childBlocks = el.querySelectorAll('div, span, p, a');
+                const isLeaf = childBlocks.length === 0 ||
+                  Array.from(childBlocks).every(c => c.textContent?.trim() === text);
+                if (isLeaf) {
+                  elements.push({ text, index: idx });
+                }
+              }
+            });
+            return elements;
+          }, regex);
 
-          if (isVisible) {
-            const currentUrl = page.url();
+          if (matchingElements.length === 0) continue;
 
-            await element.click({ timeout: 5000 });
-            await page.waitForTimeout(2000);
+          const currentUrl = page.url();
+          const el = matchingElements[0];
 
-            const newUrl = page.url();
+          // Use case-insensitive text locator (no quotes = substring, case-insensitive)
+          const locator = page.locator(`text=${el.text}`).first();
+          await locator.click({ timeout: 5000 });
+          await page.waitForTimeout(2000);
 
-            if (newUrl !== currentUrl && !seenUrls.has(newUrl)) {
-              seenUrls.add(newUrl);
-              results.push({ url: newUrl, anchorText: pattern, discoveredByClick: true });
+          const newUrl = page.url();
 
-              // Navigate back to homepage for next attempt
-              await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-              await page.waitForTimeout(3000);
-            }
+          if (newUrl !== currentUrl && !seenUrls.has(newUrl)) {
+            seenUrls.add(newUrl);
+            results.push({ url: newUrl, anchorText: el.text, discoveredByClick: true });
+
+            // Navigate back to homepage for next pattern
+            await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+            await page.waitForTimeout(3000);
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(1000);
           }
         } catch {
           // Element not found or click failed, continue to next pattern
         }
       }
     }
-
 
     return results;
 
@@ -807,10 +865,14 @@ export async function findContactLinksWithBrowser(
     // Dismiss any overlays
     await dismissOverlays(page);
 
+    // Scroll to bottom to ensure footer is loaded (contact links often in footer)
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(2000);
+
     const results: ContactLinkResult[] = [];
     const seenUrls = new Set<string>();
 
-    // Strategy 1: Find traditional <a href> links with contact-related text or URL
+    // Strategy 1: Find traditional <a href> links and onclick handlers with contact-related text or URL
     const traditionalLinks = await page.evaluate((patterns: string[]) => {
       const urls: string[] = [];
       const links = document.querySelectorAll('a[href]');
@@ -822,20 +884,40 @@ export async function findContactLinksWithBrowser(
         const text = link.textContent?.trim().toLowerCase() || '';
         const ariaLabel = link.getAttribute('aria-label')?.trim().toLowerCase() || '';
 
-        // Skip empty, javascript, mailto, tel links
         if (!href) return;
         if (href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) return;
 
-        // Check if link text matches contact patterns
         const matchesText = patterns.some(pattern =>
           text === pattern || ariaLabel === pattern
         );
-
-        // Also check if URL contains contact-related paths
         const matchesUrl = /contact|support|help|enquir|get-in-touch|reach-us/i.test(href);
 
         if (matchesText || matchesUrl) {
           urls.push(href);
+        }
+      });
+
+      // Also extract URLs from onclick="window.open('...')" handlers (no href attribute)
+      const onclickElements = document.querySelectorAll('[onclick]');
+      onclickElements.forEach((el) => {
+        const onclick = el.getAttribute('onclick') || '';
+        const urlMatch = onclick.match(/(?:window\.open|location\.href)\s*[=(]\s*['"]([^'"]+)['"]/);
+        if (!urlMatch) return;
+
+        const href = urlMatch[1];
+        if (href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) return;
+
+        let fullUrl: string;
+        try { fullUrl = new URL(href, window.location.href).href; } catch { return; }
+
+        const text = el.textContent?.trim().toLowerCase() || '';
+        const ariaLabel = el.getAttribute('aria-label')?.trim().toLowerCase() || '';
+
+        const matchesText = patterns.some(pattern => text === pattern || ariaLabel === pattern);
+        const matchesUrl = /contact|support|help|enquir|get-in-touch|reach-us|toContact/i.test(fullUrl);
+
+        if (matchesText || matchesUrl) {
+          urls.push(fullUrl);
         }
       });
 
@@ -849,45 +931,67 @@ export async function findContactLinksWithBrowser(
       }
     }
 
-
     // Strategy 2: If no traditional links found, look for clickable elements with contact text
-    // This handles SPAs where navigation is done via JavaScript (Vue Router, React Router, etc.)
+    // Uses page.evaluate with regex for case-insensitive matching across all element types
+    // (handles SPAs using <div>/<span> with click handlers instead of <a> tags)
     if (results.length === 0) {
+      const contactPatterns = [
+        { label: "Contact Us", regex: "contact\\s*us" },
+        { label: "Contact", regex: "^contact$" },
+        { label: "Get in Touch", regex: "get\\s*in\\s*touch" },
+        { label: "Support", regex: "^support$" },
+        { label: "Customer Service", regex: "customer\\s*service" },
+      ];
 
-      // Try each contact text pattern
-      for (const pattern of ["Contact Us", "Contact", "Support", "Help", "Get in Touch"]) {
+      for (const { label, regex } of contactPatterns) {
         try {
-          // Find element with exact text match (case insensitive)
-          const element = page.locator(`text="${pattern}"`).first();
-          const isVisible = await element.isVisible({ timeout: 1000 }).catch(() => false);
+          // Find clickable elements matching the text pattern (case-insensitive)
+          const matchingElements = await page.evaluate((patternStr: string) => {
+            const re = new RegExp(patternStr, 'i');
+            const elements: { text: string; index: number }[] = [];
+            const allEls = document.querySelectorAll('a, div, span, p, li, button');
+            allEls.forEach((el, idx) => {
+              const text = el.textContent?.trim() || '';
+              if (text.length > 0 && text.length < 60 && re.test(text)) {
+                // Prefer leaf elements (no nested block children with different text)
+                const childBlocks = el.querySelectorAll('div, span, p, a');
+                const isLeaf = childBlocks.length === 0 ||
+                  Array.from(childBlocks).every(c => c.textContent?.trim() === text);
+                if (isLeaf) {
+                  elements.push({ text, index: idx });
+                }
+              }
+            });
+            return elements;
+          }, regex);
 
-          if (isVisible) {
-            const currentUrl = page.url();
+          if (matchingElements.length === 0) continue;
 
-            // Click the element
-            await element.click({ timeout: 5000 });
+          const currentUrl = page.url();
+          const el = matchingElements[0];
 
-            // Wait for navigation/URL change
-            await page.waitForTimeout(2000);
+          // Use case-insensitive text locator (no quotes = substring, case-insensitive)
+          const locator = page.locator(`text=${el.text}`).first();
+          await locator.click({ timeout: 5000 });
+          await page.waitForTimeout(2000);
 
-            const newUrl = page.url();
+          const newUrl = page.url();
 
-            // If URL changed, we found a contact page
-            if (newUrl !== currentUrl && !seenUrls.has(newUrl)) {
-              seenUrls.add(newUrl);
-              results.push({ url: newUrl, discoveredByClick: true });
+          if (newUrl !== currentUrl && !seenUrls.has(newUrl)) {
+            seenUrls.add(newUrl);
+            results.push({ url: newUrl, discoveredByClick: true });
 
-              // Navigate back to homepage for next attempt
-              await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-              await page.waitForTimeout(3000);
-            }
+            // Navigate back to homepage for next pattern
+            await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+            await page.waitForTimeout(3000);
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(1000);
           }
         } catch {
           // Element not found or click failed, continue to next pattern
         }
       }
     }
-
 
     return results;
 

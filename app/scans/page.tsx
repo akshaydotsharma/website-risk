@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ScanHistoryClient } from "@/components/scan-history-client";
+import { SCAN_LIST_DATA_POINT_KEYS } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,14 @@ async function getDomains(page: number) {
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
       include: {
-        dataPoints: true,
+        dataPoints: {
+          where: {
+            key: {
+              in: [...SCAN_LIST_DATA_POINT_KEYS],
+            },
+          },
+          select: { id: true, key: true, label: true, value: true },
+        },
         _count: {
           select: { screenshots: true },
         },
@@ -49,20 +57,12 @@ export default async function ScansPage({
 }) {
   const params = await searchParams;
   const page = Math.max(1, parseInt(params.page || "1", 10) || 1);
-  const { domains, totalCount } = await getDomains(page);
+  const [{ domains, totalCount }, activeCount, highRiskCount] = await Promise.all([
+    getDomains(page),
+    prisma.domain.count({ where: { isActive: true } }),
+    prisma.domain.count({ where: { riskScore: { gte: 60 } } }),
+  ]);
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
-
-  // Calculate summary stats across all domains
-  const activeCount = await prisma.domain.count({ where: { isActive: true } });
-  const riskDomains = await prisma.domain.findMany({
-    where: { dataPoints: { some: { key: "domain_risk_assessment" } } },
-    select: { dataPoints: { where: { key: "domain_risk_assessment" }, select: { value: true } } },
-  });
-  const highRiskCount = riskDomains.filter((d) => {
-    try {
-      return JSON.parse(d.dataPoints[0]?.value || "{}").overall_risk_score > 60;
-    } catch { return false; }
-  }).length;
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">

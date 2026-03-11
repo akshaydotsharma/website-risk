@@ -2,6 +2,19 @@ import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { createHash } from "crypto";
 
+/**
+ * Safely parse a JSON string, returning a fallback value on failure.
+ * Use this when parsing stored/DB data where malformed values shouldn't crash the page.
+ */
+export function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -116,8 +129,8 @@ export async function checkWebsiteActive(url: string): Promise<{
   isActive: boolean;
   statusCode: number | null;
 }> {
-  // Helper to perform fetch with timeout
-  const fetchWithTimeout = async (method: "HEAD" | "GET"): Promise<{
+  // Helper to perform fetch with timeout against a specific URL
+  const fetchWithTimeout = async (targetUrl: string, method: "HEAD" | "GET"): Promise<{
     success: boolean;
     statusCode: number | null;
   }> => {
@@ -125,7 +138,7 @@ export async function checkWebsiteActive(url: string): Promise<{
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const response = await fetch(url, {
+      const response = await fetch(targetUrl, {
         method,
         signal: controller.signal,
         redirect: "follow",
@@ -145,27 +158,43 @@ export async function checkWebsiteActive(url: string): Promise<{
     }
   };
 
-  // Try HEAD first (more efficient)
-  const headResult = await fetchWithTimeout("HEAD");
+  // Try HTTP checks against a given URL (HEAD then GET)
+  const tryHttpChecks = async (targetUrl: string) => {
+    const headResult = await fetchWithTimeout(targetUrl, "HEAD");
+    if (headResult.success) return headResult;
+    const getResult = await fetchWithTimeout(targetUrl, "GET");
+    return getResult;
+  };
 
-  if (headResult.success) {
-    return { isActive: true, statusCode: headResult.statusCode };
+  // Build list of URLs to try: original + www variant (or non-www if original has www)
+  const urlObj = new URL(url);
+  const hostname = urlObj.hostname;
+  const urlsToTry = [url];
+
+  if (!hostname.startsWith("www.")) {
+    const wwwUrl = `${urlObj.protocol}//www.${hostname}${urlObj.pathname}${urlObj.search}`;
+    urlsToTry.push(wwwUrl);
+  } else {
+    const nonWwwUrl = `${urlObj.protocol}//${hostname.replace(/^www\./, "")}${urlObj.pathname}${urlObj.search}`;
+    urlsToTry.push(nonWwwUrl);
   }
 
-  // HEAD failed or returned error status - try GET
-  // Some servers don't handle HEAD properly but work fine with GET
-  const getResult = await fetchWithTimeout("GET");
-
-  if (getResult.success) {
-    return { isActive: true, statusCode: getResult.statusCode };
+  // Phase 1: Try HTTP HEAD+GET on each URL variant
+  let lastStatusCode: number | null = null;
+  for (const targetUrl of urlsToTry) {
+    const result = await tryHttpChecks(targetUrl);
+    if (result.success) {
+      return { isActive: true, statusCode: result.statusCode };
+    }
+    if (result.statusCode !== null) lastStatusCode = result.statusCode;
   }
 
-  // Both failed - return the most informative status code
-  // Note: Sites with SSL issues (weak DH key) may show inactive here,
-  // but the scan pipeline has browser fallbacks that will handle them correctly
+  // All HTTP checks failed on both variants.
+  // Return null statusCode — the scan processor will do DNS + browser checks
+  // (which need Node.js built-ins not available in this bundled context).
   return {
     isActive: false,
-    statusCode: getResult.statusCode ?? headResult.statusCode,
+    statusCode: lastStatusCode,
   };
 }
 
