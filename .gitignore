@@ -30,6 +30,13 @@ yarn-error.log*
 # vercel
 .vercel
 
+# yarn
+yarn.lock
+.yarn/
+
+# claude code
+.claude/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
@@ -43,7 +50,6 @@ dev.db-journal
 
 # yarn pnp
 .pnp.*
-.yarn/
 
 # binary assets
 *.key
