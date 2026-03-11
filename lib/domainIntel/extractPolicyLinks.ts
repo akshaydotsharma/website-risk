@@ -574,11 +574,13 @@ async function verifyPolicyUrl(
   }
 
   try {
-    // Try HEAD first to check if URL exists
+    // Try HEAD first to check if URL exists, fall back to GET if HEAD fails or returns error status.
+    // Some servers (e.g. Shoplazza) return 404 for HEAD but 200 for GET on the same URL.
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     let response: Response;
+    let headFailed = false;
     try {
       response = await fetch(url, {
         method: 'HEAD',
@@ -592,9 +594,15 @@ async function verifyPolicyUrl(
         dispatcher: sslTolerantDispatcher,
       });
       clearTimeout(timeout);
+      // HEAD returned non-OK status — server may not support HEAD properly
+      if (!response.ok) headFailed = true;
     } catch (headError) {
       clearTimeout(timeout);
-      // HEAD failed, try GET
+      headFailed = true;
+    }
+
+    // Fall back to GET if HEAD failed (network error or non-OK status)
+    if (headFailed) {
       const getController = new AbortController();
       const getTimeout = setTimeout(() => getController.abort(), REQUEST_TIMEOUT_MS);
 
