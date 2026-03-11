@@ -38,7 +38,6 @@ const IDLE_CHECK_INTERVAL = 30000;   // 30s idle check to catch scans started el
 const STORAGE_KEY = "scan-notifications";
 
 function loadNotifications(): ScanNotification[] {
-  if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
@@ -57,17 +56,25 @@ function saveNotifications(notifications: ScanNotification[]) {
 }
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
-  const [notifications, setNotifications] = useState<ScanNotification[]>(loadNotifications);
+  const [notifications, setNotifications] = useState<ScanNotification[]>([]);
   const [activeScans, setActiveScans] = useState<ActiveScan[]>([]);
   const prevActiveRef = useRef<Map<string, string>>(new Map());
   const prevInvestigationsRef = useRef<Map<string, string>>(new Map());
   const initializedRef = useRef(false);
+  const hydratedRef = useRef(false);
   const pollingRef = useRef<"active" | "idle">("idle");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
 
-  // Persist to localStorage
+  // Load from localStorage after hydration
   useEffect(() => {
+    hydratedRef.current = true;
+    setNotifications(loadNotifications());
+  }, []);
+
+  // Persist to localStorage (skip the initial empty state)
+  useEffect(() => {
+    if (!hydratedRef.current) return;
     saveNotifications(notifications);
   }, [notifications]);
 
