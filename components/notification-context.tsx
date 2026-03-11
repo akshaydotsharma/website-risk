@@ -62,33 +62,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const prevActiveRef = useRef<Map<string, string>>(new Map());
   const prevInvestigationsRef = useRef<Map<string, string>>(new Map());
   const initializedRef = useRef(false);
-  const lastSoundAtRef = useRef(0);
   const pollingRef = useRef<"active" | "idle">("idle");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
-
-  // Play notification sound
-  const playSound = useCallback((reason: string) => {
-    const now = Date.now();
-    const sinceLastSound = now - lastSoundAtRef.current;
-    if (sinceLastSound < 5000) {
-      console.log(`[Sound] SKIPPED (debounce: ${sinceLastSound}ms) — ${reason}`);
-      return;
-    }
-    lastSoundAtRef.current = now;
-    console.log(`[Sound] PLAYING — ${reason}`);
-    try {
-      const audio = new Audio("/sounds/faaah.mp3");
-      audio.volume = 0.5;
-      audio.play().then(() => {
-        console.log(`[Sound] play() SUCCESS`);
-      }).catch((err) => {
-        console.warn(`[Sound] play() BLOCKED: ${err.message}`);
-      });
-    } catch (err) {
-      console.warn(`[Sound] Audio constructor failed:`, err);
-    }
-  }, []);
 
   // Persist to localStorage
   useEffect(() => {
@@ -153,9 +129,6 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         }
 
         if (justCompleted.length > 0 && mountedRef.current) {
-          const names = justCompleted.map((n) => n.normalizedUrl).join(", ");
-          console.log(`[Poll] ${justCompleted.length} item(s) completed: ${names} — triggering sound`);
-          playSound(`${justCompleted.length} completed: ${names}`);
           setNotifications((prev) => {
             const recentCutoff = Date.now() - 30_000;
             const deduped = justCompleted.filter(
@@ -190,7 +163,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       console.error("[Poll] Error:", err);
       return -1;
     }
-  }, [playSound]);
+  }, []);
 
   // Manage polling intervals
   const setPollingMode = useCallback((mode: "active" | "idle") => {
@@ -270,13 +243,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       read: false,
       createdAt: Date.now(),
     };
-    playSound(`direct: ${normalizedUrl}`);
     setNotifications((prev) => {
       const recentCutoff = Date.now() - 30_000;
       if (prev.some((p) => p.domainId === domainId && p.createdAt > recentCutoff)) return prev;
       return [notification, ...prev];
     });
-  }, [playSound]);
+  }, []);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
