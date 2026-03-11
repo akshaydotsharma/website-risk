@@ -12,9 +12,20 @@ import {
   AlertCircle,
   Globe,
   ChevronRight,
+  Network,
+  ShieldCheck,
+  FileSearch,
+  Bot,
+  Camera,
+  Scale,
+  GitBranch,
+  Layers,
+  BarChart3,
 } from "lucide-react";
 import { cleanUrl, getScoreTextColor, getScoreBgColorSubtle } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
+
+type Mode = "scan" | "investigate";
 
 interface RecentScan {
   id: string;
@@ -25,11 +36,44 @@ interface RecentScan {
   scanStatus: string | null;
 }
 
-interface HomePageContentProps {
-  recentScans: RecentScan[];
+interface RecentInvestigation {
+  id: string;
+  name: string | null;
+  status: string;
+  domainCount: number;
+  highRiskCount: number;
+  createdAt: string;
 }
 
-export default function HomePageContent({ recentScans }: HomePageContentProps) {
+interface HomePageContentProps {
+  recentScans: RecentScan[];
+  recentInvestigations: RecentInvestigation[];
+}
+
+function getStatusVariant(status: string): "success-subtle" | "info-subtle" | "danger-subtle" | "secondary" {
+  switch (status) {
+    case "completed": return "success-subtle";
+    case "scanning":
+    case "analyzing":
+    case "pending": return "info-subtle";
+    case "failed": return "danger-subtle";
+    default: return "secondary";
+  }
+}
+
+function getStatusLabel(status: string): string {
+  switch (status) {
+    case "completed": return "Completed";
+    case "scanning": return "Scanning";
+    case "analyzing": return "Analyzing";
+    case "pending": return "Pending";
+    case "failed": return "Failed";
+    default: return status;
+  }
+}
+
+export default function HomePageContent({ recentScans, recentInvestigations }: HomePageContentProps) {
+  const [mode, setMode] = useState<Mode>("scan");
   const [url, setUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,18 +81,28 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
   const searchParams = useSearchParams();
   const { startPolling } = useNotifications();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const autoResize = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
+    ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, []);
 
   useEffect(() => {
     const urlParam = searchParams.get("url");
     if (urlParam) setUrl(urlParam);
   }, [searchParams]);
+
+  // Focus appropriate input on mode switch
+  useEffect(() => {
+    if (mode === "scan") {
+      inputRef.current?.focus();
+    } else {
+      textareaRef.current?.focus();
+    }
+  }, [mode]);
 
   const parseDomains = (input: string): string[] => {
     return input
@@ -58,20 +112,35 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
       .map((s) => cleanUrl(s));
   };
 
+  const domainCount = parseDomains(url).length;
+
+  // Validation error for scan mode with multiple domains
+  const scanModeError = mode === "scan" && domainCount > 1
+    ? "Only one domain allowed in Single Scan. Switch to Investigate Cluster for multiple domains."
+    : null;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
     const domains = parseDomains(url);
     if (domains.length === 0) {
-      setError("Enter a website URL to begin scanning.");
+      setError(mode === "scan"
+        ? "Enter a website URL to begin scanning."
+        : "Enter at least 2 domains to investigate.");
+      return;
+    }
+
+    if (mode === "investigate" && domains.length < 2) {
+      setError("Enter at least 2 domains to run a cluster investigation.");
       return;
     }
 
     setIsLoading(true);
 
     try {
-      if (domains.length === 1) {
+      if (mode === "scan") {
+        if (domains.length > 1) return;
         const response = await fetch("/api/scans", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -82,7 +151,7 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
         startPolling();
         router.push(`/scans/${data.id}`);
       } else {
-        // Multiple URLs → create investigation
+        // Investigation
         const response = await fetch("/api/investigations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -99,134 +168,321 @@ export default function HomePageContent({ recentScans }: HomePageContentProps) {
     }
   };
 
+  const hasHistory = recentScans.length > 0 || recentInvestigations.length > 0;
+
   return (
-    <div className="flex flex-col items-center justify-start pt-52 sm:pt-60 px-4 sm:px-6">
-      <div className="w-full max-w-xl mx-auto space-y-6">
+    <div className="flex flex-col items-center justify-start pt-12 sm:pt-16 px-4 sm:px-6 pb-12">
+      <div className="w-full max-w-2xl mx-auto space-y-6">
         {/* Heading */}
         <div className="text-center space-y-2">
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-foreground">
-            Domain Scanner
+            Domain Risk Analysis
           </h1>
           <p className="text-sm sm:text-base text-muted-foreground/80 leading-relaxed">
-            Scan any domain for risk signals and compliance gaps
+            Scan domains for risk signals or investigate clusters for coordinated patterns
           </p>
         </div>
 
-        {/* Search input */}
-        <div className="search-hero">
-          <form onSubmit={handleSubmit} className="flex flex-col p-2">
-            <div className="relative">
+        {/* Mode Segmented Control */}
+        <div className="flex items-center justify-center">
+          <div className="inline-flex items-center bg-muted/50 rounded-lg p-1 gap-1">
+            <button
+              onClick={() => { setMode("scan"); setError(null); }}
+              className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
+                mode === "scan"
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Search className="h-3.5 w-3.5" />
+              Single Scan
+            </button>
+            <button
+              onClick={() => { setMode("investigate"); setError(null); }}
+              className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
+                mode === "investigate"
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Network className="h-3.5 w-3.5" />
+              Investigate Cluster
+            </button>
+          </div>
+        </div>
+
+        {/* Input Area */}
+        <form onSubmit={handleSubmit}>
+          {mode === "scan" ? (
+            /* Single-line: input + button inline */
+            <>
+            <div className="search-hero flex items-center gap-2 px-3 py-1.5">
               <Search
-                className="absolute left-3 top-3 h-4 w-4 text-muted-foreground/60"
+                className="h-4 w-4 text-muted-foreground/60 shrink-0"
                 aria-hidden="true"
               />
-              <textarea
-                ref={textareaRef}
-                placeholder="Enter domains, e.g. example.com, site.org"
+              <input
+                ref={inputRef}
+                type="text"
+                placeholder="Enter a domain, e.g. example.com"
                 value={url}
-                onChange={(e) => { setUrl(e.target.value); autoResize(); }}
+                onChange={(e) => { setUrl(e.target.value); setError(null); }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Enter") {
                     e.preventDefault();
                     handleSubmit(e);
                   }
                 }}
                 disabled={isLoading}
-                aria-label="Website domains to scan"
-                aria-describedby="url-helper"
+                aria-label="Website domain to scan"
                 aria-invalid={error ? "true" : undefined}
-                rows={1}
-                style={{ outline: "none", boxShadow: "none" }}
-                className="flex w-full rounded-md text-sm sm:text-base pl-10 pr-3 py-2.5 border-0 shadow-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 bg-transparent resize-none overflow-y-auto"
+                className="flex-1 min-w-0 text-sm sm:text-base py-2 border-none shadow-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 bg-transparent appearance-none placeholder:text-muted-foreground/50"
               />
+              <Button
+                type="submit"
+                disabled={isLoading || !!scanModeError}
+                className="h-9 px-4 rounded-full text-sm font-semibold shadow-sm hover:shadow-md active:shadow-none active:scale-[0.97] hover:brightness-110 transition-all duration-150 shrink-0"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    <span className="hidden sm:inline">Scanning{"\u2026"}</span>
+                  </>
+                ) : (
+                  <>
+                    Scan
+                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  </>
+                )}
+              </Button>
             </div>
-            <div className="flex justify-end pt-1 pb-0.5 pr-1">
-            <Button
-              type="submit"
-              disabled={isLoading}
-              className="h-9 px-4 rounded-full text-sm font-semibold shadow-sm hover:shadow-md active:shadow-none active:scale-[0.97] hover:brightness-110 transition-all duration-150"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  <span className="hidden sm:inline">Scanning{"\u2026"}</span>
-                </>
-              ) : (
-                <>
-                  {parseDomains(url).length > 1 ? `Investigate (${parseDomains(url).length})` : "Scan"}
-                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                </>
-              )}
-            </Button>
+            </>
+          ) : (
+            /* Textarea for investigate mode */
+            <div className="search-hero flex flex-col p-2">
+              <p className="text-xs text-muted-foreground px-3 pt-1.5 pb-0.5">Enter 2 or more domains, one per line or comma-separated</p>
+              <div className="relative">
+                <Network
+                  className="absolute left-3 top-3 h-4 w-4 text-muted-foreground/60"
+                  aria-hidden="true"
+                />
+                <textarea
+                  ref={textareaRef}
+                  placeholder={"site1.com\nsite2.org\nsite3.net"}
+                  value={url}
+                  onChange={(e) => { setUrl(e.target.value); setError(null); autoResize(); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      handleSubmit(e);
+                    }
+                  }}
+                  disabled={isLoading}
+                  aria-label="Website domains to investigate"
+                  aria-invalid={error ? "true" : undefined}
+                  rows={3}
+                  style={{ outline: "none", boxShadow: "none" }}
+                  className="flex w-full rounded-md text-sm sm:text-base pl-10 pr-3 py-2.5 border-0 shadow-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 bg-transparent resize-none overflow-y-auto"
+                />
+              </div>
+              <div className="flex items-center justify-between pt-1 pb-0.5 px-1">
+                <div className="flex items-center gap-2">
+                  {domainCount > 0 && (
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {domainCount} domain{domainCount !== 1 ? "s" : ""} detected
+                    </span>
+                  )}
+                </div>
+                <Button
+                  type="submit"
+                  disabled={isLoading}
+                  className="h-9 px-4 rounded-full text-sm font-semibold shadow-sm hover:shadow-md active:shadow-none active:scale-[0.97] hover:brightness-110 transition-all duration-150"
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      <span className="hidden sm:inline">Starting{"\u2026"}</span>
+                    </>
+                  ) : (
+                    <>
+                      Investigate
+                      <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
-          </form>
+          )}
+
+          {/* Error state — right below the input */}
+          {(scanModeError || error) && (
+            <p className="text-xs text-destructive pt-2" role="alert">
+              {scanModeError || error}
+            </p>
+          )}
+        </form>
+
+        {/* Deliverables preview */}
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground/70">
+          {mode === "scan" ? (
+            <>
+              <span className="flex items-center gap-1"><ShieldCheck className="h-3 w-3" />Risk Score</span>
+              <span className="flex items-center gap-1"><Scale className="h-3 w-3" />Policy Check</span>
+              <span className="flex items-center gap-1"><Bot className="h-3 w-3" />AI Content</span>
+              <span className="flex items-center gap-1"><FileSearch className="h-3 w-3" />WHOIS</span>
+              <span className="flex items-center gap-1"><Camera className="h-3 w-3" />Screenshot</span>
+            </>
+          ) : (
+            <>
+              <span className="flex items-center gap-1"><GitBranch className="h-3 w-3" />Similarity</span>
+              <span className="flex items-center gap-1"><Layers className="h-3 w-3" />Cluster Detection</span>
+              <span className="flex items-center gap-1"><Network className="h-3 w-3" />Shared Infra</span>
+              <span className="flex items-center gap-1"><BarChart3 className="h-3 w-3" />Risk Heatmap</span>
+            </>
+          )}
         </div>
 
-        {/* Error state */}
-        {error && (
-          <div
-            className="p-3 bg-danger-tint border border-destructive/20 rounded-lg text-sm text-destructive flex items-start gap-2"
-            role="alert"
-          >
-            <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" aria-hidden="true" />
-            {error}
+        {/* Keyboard hint for investigate mode */}
+        {mode === "investigate" && (
+          <p className="text-center text-[11px] text-muted-foreground/50">
+            Press <kbd className="px-1 py-0.5 bg-muted/50 rounded text-[10px] font-mono">Cmd+Enter</kbd> to submit
+          </p>
+        )}
+
+        {/* Recent Activity */}
+        {hasHistory && (
+          <div className="grid sm:grid-cols-2 gap-6 pt-4 border-t border-border/50">
+            {/* Recent Scans */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="text-label">Recent Scans</h2>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs text-muted-foreground hover:text-foreground gap-1 h-7"
+                  onClick={() => router.push("/scans")}
+                >
+                  View All
+                  <ChevronRight className="h-3 w-3" aria-hidden="true" />
+                </Button>
+              </div>
+              {recentScans.length > 0 ? (
+                <div className="bg-card border rounded-xl divide-y overflow-hidden">
+                  {recentScans.map((scan) => (
+                    <button
+                      key={scan.id}
+                      onClick={() => router.push(`/scans/${scan.id}`)}
+                      className="recent-scan-item group w-full text-left px-4 py-2.5 hover:pl-5 transition-all duration-150"
+                    >
+                      <div className={`flex items-center justify-center w-9 h-9 rounded-lg shrink-0 ${scan.riskScore !== null ? getScoreBgColorSubtle(scan.riskScore) : "bg-muted/50"}`}>
+                        {scan.riskScore !== null ? (
+                          <span className={`text-sm font-bold tabular-nums ${getScoreTextColor(scan.riskScore)}`}>
+                            {scan.riskScore}
+                          </span>
+                        ) : (
+                          <Globe className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{scan.normalizedUrl}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {scan.lastCheckedAt
+                            ? formatDistanceToNow(new Date(scan.lastCheckedAt), { addSuffix: true })
+                            : "Not yet scanned"}
+                        </p>
+                      </div>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0 group-hover:translate-x-0.5 transition-all duration-150" aria-hidden="true" />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="border rounded-xl p-6 text-center">
+                  <Globe className="h-5 w-5 text-muted-foreground/40 mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">No scans yet</p>
+                </div>
+              )}
+            </div>
+
+            {/* Recent Investigations */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="text-label">Recent Investigations</h2>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs text-muted-foreground hover:text-foreground gap-1 h-7"
+                  onClick={() => router.push("/investigations")}
+                >
+                  View All
+                  <ChevronRight className="h-3 w-3" aria-hidden="true" />
+                </Button>
+              </div>
+              {recentInvestigations.length > 0 ? (
+                <div className="bg-card border rounded-xl divide-y overflow-hidden">
+                  {recentInvestigations.map((inv) => (
+                    <button
+                      key={inv.id}
+                      onClick={() => router.push(`/investigations/${inv.id}`)}
+                      className="recent-scan-item group w-full text-left px-4 py-2.5 hover:pl-5 transition-all duration-150"
+                    >
+                      <div className="flex items-center justify-center w-9 h-9 rounded-lg shrink-0 bg-primary/10">
+                        <Network className="h-4 w-4 text-primary" aria-hidden="true" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {inv.name || `Investigation`}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {inv.domainCount} domain{inv.domainCount !== 1 ? "s" : ""}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatDistanceToNow(new Date(inv.createdAt), { addSuffix: true })}
+                        </p>
+                      </div>
+                      <Badge variant={getStatusVariant(inv.status)} className="shrink-0">
+                        {getStatusLabel(inv.status)}
+                      </Badge>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0 group-hover:translate-x-0.5 transition-all duration-150" aria-hidden="true" />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="border rounded-xl p-6 text-center">
+                  <Network className="h-5 w-5 text-muted-foreground/40 mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">No investigations yet</p>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
-        {/* Recent scans */}
-        {recentScans.length > 0 && (
-          <div className="space-y-2 pt-6 border-t border-border/50">
-            <div className="flex items-center justify-between">
-              <h2 className="text-label">Recent Scans</h2>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs text-muted-foreground hover:text-foreground gap-1 h-7"
-                onClick={() => router.push("/scans")}
-              >
-                View All
-                <ChevronRight className="h-3 w-3" aria-hidden="true" />
-              </Button>
-            </div>
-            <div className="bg-card border rounded-xl divide-y overflow-hidden">
-              {recentScans.map((scan) => (
-                <button
-                  key={scan.id}
-                  onClick={() => router.push(`/scans/${scan.id}`)}
-                  className="recent-scan-item group w-full text-left px-4 py-2.5 hover:pl-5 transition-all duration-150"
-                >
-                  {/* Score indicator */}
-                  <div className={`flex items-center justify-center w-9 h-9 rounded-lg shrink-0 ${scan.riskScore !== null ? getScoreBgColorSubtle(scan.riskScore) : "bg-muted/50"}`}>
-                    {scan.riskScore !== null ? (
-                      <span className={`text-sm font-bold tabular-nums ${getScoreTextColor(scan.riskScore)}`}>
-                        {scan.riskScore}
-                      </span>
-                    ) : (
-                      <Globe className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                    )}
+        {/* First-time empty state */}
+        {!hasHistory && (
+          <div className="pt-8 space-y-4">
+            <div className="text-center space-y-1">
+              <p className="text-sm font-medium text-foreground">How it works</p>
+              <div className="flex items-center justify-center gap-6 text-xs text-muted-foreground pt-2">
+                <div className="flex flex-col items-center gap-1.5">
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <span className="text-xs font-bold text-primary">1</span>
                   </div>
-
-                  {/* Domain info */}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{scan.normalizedUrl}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {scan.lastCheckedAt
-                        ? formatDistanceToNow(new Date(scan.lastCheckedAt), { addSuffix: true })
-                        : "Not yet scanned"}
-                    </p>
+                  <span>Enter domains</span>
+                </div>
+                <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
+                <div className="flex flex-col items-center gap-1.5">
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <span className="text-xs font-bold text-primary">2</span>
                   </div>
-
-                  {/* Status */}
-                  <Badge
-                    variant={scan.isActive ? "success-subtle" : "danger-subtle"}
-                    className="shrink-0"
-                  >
-                    {scan.isActive ? "Active" : "Inactive"}
-                  </Badge>
-
-                  <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0 group-hover:translate-x-0.5 transition-all duration-150" aria-hidden="true" />
-                </button>
-              ))}
+                  <span>Analyze risk</span>
+                </div>
+                <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
+                <div className="flex flex-col items-center gap-1.5">
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                    <span className="text-xs font-bold text-primary">3</span>
+                  </div>
+                  <span>Review findings</span>
+                </div>
+              </div>
             </div>
           </div>
         )}
