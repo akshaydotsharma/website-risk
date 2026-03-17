@@ -49,6 +49,7 @@ export interface PolicyLinkCandidate {
   method: DiscoveryMethod;
   rank: number; // Higher = better match
   inFooter: boolean;
+  browserVerified?: boolean; // True when URL was discovered via browser click navigation (already verified)
 }
 
 export interface PolicyLinkVerified {
@@ -215,17 +216,20 @@ const COMMON_PATHS: Record<PolicyType, string[]> = {
 };
 
 // Bot detection indicators in page content
+// Bot challenge detection patterns
+// These must be specific enough to avoid false positives on legitimate pages.
+// Generic words like "blocked" or "cloudflare" (CDN references) cause false positives.
 const BOT_CHALLENGE_INDICATORS = [
-  /cloudflare/i,
-  /attention\s*required/i,
+  /cf-chl-bypass/i,
+  /_cf_chl_opt/i,
+  /attention\s*required.*cloudflare/i,
   /just\s*a\s*moment/i,
   /checking\s*your\s*browser/i,
-  /security\s*check/i,
-  /ray\s*id/i,
+  /security\s*check.*verify/i,
+  /cf-ray/i,
   /please\s*verify\s*you\s*are\s*human/i,
-  /ddos\s*protection/i,
-  /access\s*denied/i,
-  /blocked/i,
+  /ddos[\s-]*protection\s*by/i,
+  /access\s*denied.*bot/i,
 ];
 
 const MAX_CANDIDATES_PER_TYPE = 3;
@@ -1045,7 +1049,7 @@ async function extractWithChromiumRender(
   targetDomain: string,
   allowSubdomains: boolean,
   missingTypes: PolicyType[]
-): Promise<PolicyLinkCandidate[]> {
+): Promise<{ candidates: PolicyLinkCandidate[]; renderedHtml: string | null }> {
   try {
     console.log(`[PolicyLinks] Using Chromium render for ${homepageUrl}`);
 
@@ -1058,13 +1062,13 @@ async function extractWithChromiumRender(
     });
 
     if (!result.content) {
-      return [];
+      return { candidates: [], renderedHtml: null };
     }
 
     // Check for bot challenge in rendered content
     if (isBotChallengePage(result.content)) {
       console.log(`[PolicyLinks] Bot challenge detected even with Chromium`);
-      return [];
+      return { candidates: [], renderedHtml: null };
     }
 
     // Extract from rendered HTML (same as Strategy A)
@@ -1084,10 +1088,10 @@ async function extractWithChromiumRender(
       candidates.push(...clickCandidates);
     }
 
-    return candidates;
+    return { candidates, renderedHtml: result.content };
   } catch (error) {
     console.error(`[PolicyLinks] Chromium render failed:`, error);
-    return [];
+    return { candidates: [], renderedHtml: null };
   }
 }
 
@@ -1111,17 +1115,23 @@ async function discoverPolicyLinksByClick(
       viewport: { width: 1920, height: 1080 },
     });
     const page = await context.newPage();
-    await page.goto(homepageUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(homepageUrl, { waitUntil: 'load', timeout: 30000 });
+    // Wait for SPA to render (networkidle may never fire for SPAs with persistent connections)
+    try {
+      await page.waitForLoadState('networkidle', { timeout: 10000 });
+    } catch { /* timeout is ok for SPAs */ }
     await page.waitForTimeout(3000);
     // Scroll to bottom to ensure footer is loaded
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await page.waitForTimeout(2000);
 
-    // Map policy types to text patterns to look for
+    // Use the same broad patterns as POLICY_KEYWORDS for click discovery
+    // Previously these were too strict (e.g. "privacy policy" instead of "privacy")
+    // which missed sites that use short labels like "Privacy" or "Terms"
     const textPatterns: Record<PolicyType, RegExp> = {
-      privacy: /privacy\s*policy/i,
-      refund: /re(?:fund|turn)s?\s*policy/i,
-      terms: /terms\s*(?:&|and)?\s*(?:conditions|of\s*(?:service|use))/i,
+      privacy: POLICY_KEYWORDS.privacy.anchor,
+      refund: POLICY_KEYWORDS.refund.anchor,
+      terms: POLICY_KEYWORDS.terms.anchor,
     };
 
     for (const policyType of missingTypes) {
@@ -1158,34 +1168,45 @@ async function discoverPolicyLinksByClick(
         // Click using text locator
         const locator = page.locator(`text=${el.text}`).first();
         await locator.click({ timeout: 5000 });
-        // Wait longer for SPA content to render after navigation
-        await page.waitForTimeout(4000);
+        // Wait for SPA navigation and content render
+        try {
+          await page.waitForLoadState('networkidle', { timeout: 10000 });
+        } catch { /* timeout is ok, proceed */ }
+        await page.waitForTimeout(3000);
 
         const afterUrl = page.url();
         if (afterUrl !== beforeUrl) {
           console.log(`[PolicyLinks] Click navigated to: ${afterUrl}`);
 
           // Verify the page has relevant content
-          const bodyText = await page.evaluate(() => document.body.innerText?.slice(0, 2000) || '');
+          const bodyText = await page.evaluate(() => document.body.innerText?.slice(0, 5000) || '');
           const contentPattern = POLICY_KEYWORDS[policyType].content;
           // Also check if the URL itself looks like a policy page (hash routes included)
           const urlLooksLikePolicy = /policy|privacy|refund|return|terms|legal|tos|exchange|conditions/i.test(afterUrl);
-          if (contentPattern.test(bodyText) || urlLooksLikePolicy) {
+          // The anchor text itself matching the policy keyword is strong evidence
+          // (e.g. clicking "Privacy Policy" that navigated to a UUID-based URL in an SPA)
+          const anchorTextMatchesPolicy = POLICY_KEYWORDS[policyType].anchor.test(el.text);
+
+          if (contentPattern.test(bodyText) || urlLooksLikePolicy || anchorTextMatchesPolicy) {
             candidates.push({
               url: afterUrl,
               policyType,
               anchorText: el.text,
               method: 'chromium_render' as DiscoveryMethod,
-              rank: 85,
+              rank: anchorTextMatchesPolicy ? 90 : 85,
+              browserVerified: true, // URL verified via actual browser navigation
               inFooter: true,
             });
-            console.log(`[PolicyLinks] ✓ Click discovery found ${policyType}: ${afterUrl}`);
+            console.log(`[PolicyLinks] ✓ Click discovery found ${policyType}: ${afterUrl} (text="${el.text}")`);
           } else {
-            console.log(`[PolicyLinks] ✗ Clicked page doesn't contain ${policyType} keywords and URL doesn't match`);
+            console.log(`[PolicyLinks] ✗ Clicked page doesn't contain ${policyType} keywords, URL doesn't match, and text "${el.text}" isn't a match`);
           }
 
           // Navigate back for next policy type
-          await page.goto(homepageUrl, { waitUntil: 'networkidle', timeout: 30000 });
+          await page.goto(homepageUrl, { waitUntil: 'load', timeout: 30000 });
+          try {
+            await page.waitForLoadState('networkidle', { timeout: 10000 });
+          } catch { /* timeout ok */ }
           await page.waitForTimeout(2000);
           await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
           await page.waitForTimeout(1000);
@@ -1591,10 +1612,7 @@ export async function extractPolicyLinks(
 
         // Check if we got a Cloudflare challenge or similar bot protection page
         // These pages typically have very short content and specific patterns
-        const isCloudflareChallenge = html.includes('Just a moment...') ||
-          html.includes('_cf_chl_opt') ||
-          html.includes('challenge-platform') ||
-          (html.includes('Enable JavaScript') && html.length < 10000);
+        const isCloudflareChallenge = isBotChallengePage(html);
 
         // Detect SPA shell: tiny HTML with no real text content
         const shellText = html
@@ -1603,17 +1621,22 @@ export async function extractPolicyLinks(
           .replace(/<[^>]+>/g, '')
           .replace(/\s+/g, ' ')
           .trim();
-        const isSpaShell = html.length < 3000 && shellText.length < 100;
+        // SPA shell: either tiny HTML or large HTML with very little text content
+        // (e.g. Vue/Vuetify apps have huge inline CSS but no rendered text)
+        const isSpaShell = (html.length < 3000 && shellText.length < 100) ||
+          (shellText.length < 200 && html.length > 5000);
 
         if (isCloudflareChallenge || isSpaShell) {
           console.log(`[PolicyLinks] Detected ${isSpaShell ? 'SPA shell' : 'Cloudflare challenge'} (${html.length} bytes, ${shellText.length} chars text), falling back to browser...`);
           needsChromiumFallback = true;
         } else {
-          // Check if this is a JavaScript-rendered page (Shoplazza, Shopify, etc.)
-          // that may need browser rendering to get full content including footer
+          // Check if this is a JavaScript-rendered page that may need browser rendering
           const hasShoplazzaMarker = html.includes('shoplazza') || html.includes('window.__shoplazza');
           const hasShopifyMarker = html.includes('cdn.shopify.com') || html.includes('Shopify.theme');
-          const isJsRenderedSite = hasShoplazzaMarker || hasShopifyMarker;
+          const hasVueMarker = html.includes('__vue') || html.includes('v-app') || html.includes('nuxt') || html.includes('__NUXT');
+          const hasReactMarker = html.includes('__NEXT_DATA__') || html.includes('_reactRoot') || html.includes('gatsby');
+          const hasAngularMarker = html.includes('ng-app') || html.includes('ng-version');
+          const isJsRenderedSite = hasShoplazzaMarker || hasShopifyMarker || hasVueMarker || hasReactMarker || hasAngularMarker;
 
           // Check if footer appears to be missing (policy links usually in footer)
           const hasFooter = /<footer/i.test(html) || /class="[^"]*footer[^"]*"/i.test(html);
@@ -1686,9 +1709,7 @@ export async function extractPolicyLinks(
 
       if (browserResult.content && browserResult.content.length > 1000) {
         // Check for bot challenge in rendered content
-        const isBotBlocked = browserResult.content.includes('Just a moment...') ||
-          browserResult.content.includes('_cf_chl_opt') ||
-          browserResult.content.includes('challenge-platform');
+        const isBotBlocked = isBotChallengePage(browserResult.content);
 
         if (isBotBlocked) {
           console.log(`[PolicyLinks] Browser fetch still returned bot challenge page`);
@@ -1820,13 +1841,21 @@ export async function extractPolicyLinks(
 
   if (missingAfterB.length > 0) {
     attempts.chromium_render = true;
-    const chromiumCandidates = await extractWithChromiumRender(
+    const chromiumResult = await extractWithChromiumRender(
       scanId,
       homepageUrl,
       targetDomain,
       allowSubdomains,
       missingAfterB
     );
+    const chromiumCandidates = chromiumResult.candidates;
+
+    // If we still don't have homepageHtml (SPA/bot protection blocked initial fetch),
+    // use the chromium-rendered HTML so Strategies D & E can also run
+    if (!homepageHtml && chromiumResult.renderedHtml) {
+      homepageHtml = chromiumResult.renderedHtml;
+      console.log(`[PolicyLinks] Using chromium-rendered HTML (${homepageHtml.length} chars) for subsequent strategies`);
+    }
 
     for (const policyType of missingAfterB) {
       if (foundTypes.has(policyType)) continue;
@@ -1836,6 +1865,29 @@ export async function extractPolicyLinks(
         .slice(0, MAX_CANDIDATES_PER_TYPE);
 
       for (const candidate of typeCandidates) {
+        // Click-discovered URLs were already verified by browser navigation
+        // (user clicked "Privacy Policy" and the URL changed). Skip HTTP verification
+        // for SPAs where the URL won't respond properly to static fetches.
+        if (candidate.browserVerified) {
+          console.log(`[PolicyLinks] ✓ Browser-verified ${policyType} via click: ${candidate.url} (text="${candidate.anchorText}")`);
+          verifiedLinks.push({
+            url: candidate.url,
+            policyType,
+            discoveredOn: homepageUrl,
+            discoveryMethod: 'chromium_render',
+            verifiedOk: true,
+            statusCode: 200,
+            contentType: 'text/html',
+            verificationNotes: `Verified via browser click navigation from "${candidate.anchorText}"`,
+            titleSnippet: null,
+          });
+          foundTypes.add(policyType);
+
+          await logSignal(scanId, 'policy_links', `${policyType}_url`, candidate.url, candidate.url);
+          await logSignal(scanId, 'policy_links', `${policyType}_verified`, true, candidate.url);
+          break;
+        }
+
         const verification = await verifyPolicyUrl(
           scanId,
           candidate.url,
